@@ -136,32 +136,55 @@ window.ScoreMeter = function ScoreMeter({ value, label, color = "var(--accent)" 
   );
 };
 
-// Cache des SVG charges
+// Cache des SVG charges (data URIs)
 window.__LOGO_CACHE = {};
 window.__LOGO_FAILED = {};
 
+// Convertit un SVG (string) en data URI utilisable dans <img src>
+function svgToDataUri(svgString) {
+  // Encoder pour gérer les caractères spéciaux (UTF-8)
+  const encoded = encodeURIComponent(svgString)
+    .replace(/'/g, "%27")
+    .replace(/"/g, "%22");
+  return `data:image/svg+xml;charset=utf-8,${encoded}`;
+}
+
+// Vérifie que le contenu est bien un SVG (et pas un PNG ou autre)
+function isValidSvg(content) {
+  if (!content || typeof content !== "string") return false;
+  const trimmed = content.trim().toLowerCase();
+  // Doit commencer par <?xml ou <svg
+  if (!(trimmed.startsWith("<?xml") || trimmed.startsWith("<svg"))) return false;
+  // Doit contenir une balise svg
+  return /<svg[\s>]/i.test(content);
+}
+
 // ========== TEAM LOGO BLOCK ==========
 window.TeamLogo = function TeamLogo({ team, size = 40 }) {
-  const [svgContent, setSvgContent] = useState(window.__LOGO_CACHE[team?.id] || null);
+  const [dataUri, setDataUri] = useState(window.__LOGO_CACHE[team?.id] || null);
   const [failed, setFailed] = useState(window.__LOGO_FAILED[team?.id] || false);
 
   useEffect(() => {
-    if (!team || svgContent || failed) return;
+    if (!team || dataUri || failed) return;
     if (window.__LOGO_CACHE[team.id]) {
-      setSvgContent(window.__LOGO_CACHE[team.id]);
+      setDataUri(window.__LOGO_CACHE[team.id]);
       return;
     }
-    // Charger le SVG local : ./logos/{TEAM_ID}.svg
     fetch(`./logos/${team.id}.svg`)
       .then(r => {
         if (!r.ok) throw new Error("404");
         return r.text();
       })
       .then(svg => {
-        // Sécurité minimum : retirer les scripts éventuels du SVG
+        // Vérifier que c'est bien un SVG (pas un PNG renommé en .svg)
+        if (!isValidSvg(svg)) {
+          throw new Error("not a valid SVG file");
+        }
+        // Sécurité : retirer les scripts éventuels
         const clean = svg.replace(/<script[\s\S]*?<\/script>/gi, "");
-        window.__LOGO_CACHE[team.id] = clean;
-        setSvgContent(clean);
+        const uri = svgToDataUri(clean);
+        window.__LOGO_CACHE[team.id] = uri;
+        setDataUri(uri);
       })
       .catch(() => {
         window.__LOGO_FAILED[team.id] = true;
@@ -171,8 +194,8 @@ window.TeamLogo = function TeamLogo({ team, size = 40 }) {
 
   if (!team) return null;
 
-  // SVG officiel chargé : on l'affiche directement
-  if (svgContent) {
+  // SVG officiel chargé : on l'affiche dans une <img> (qui contraint la taille)
+  if (dataUri) {
     return (
       <div
         style={{
@@ -184,9 +207,20 @@ window.TeamLogo = function TeamLogo({ team, size = 40 }) {
           flexShrink: 0,
         }}
       >
-        <div
-          style={{ width: "100%", height: "100%" }}
-          dangerouslySetInnerHTML={{ __html: svgContent }}
+        <img
+          src={dataUri}
+          alt={team.short || team.name}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            display: "block",
+          }}
+          onError={() => {
+            window.__LOGO_FAILED[team.id] = true;
+            setFailed(true);
+            setDataUri(null);
+          }}
         />
       </div>
     );
