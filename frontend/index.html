@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VARION — Sports Betting Analytics</title>
+
+    <!-- Fonts : pairing distinctif -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel pour JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Recharts pour graphiques -->
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="react" src="/src/api.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/Common.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/MatchCard.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/MatchDetail.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/ValueBets.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/App.js"></script>
+</body>
+</html>
