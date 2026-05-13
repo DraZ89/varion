@@ -492,6 +492,218 @@ def admin_resolve_bets(authorization: Optional[str] = Header(None)):
     return resolve_pending_bets(authorization)
 
 
+# =============== GOOGLE SHEETS SYNC ENDPOINTS ===============
+
+def _check_sheets_auth(authorization: str):
+    """Verifie le token sheets. Format attendu : 'Bearer <SHEETS_TOKEN>'"""
+    sheets_token = os.environ.get("SHEETS_TOKEN")
+    if not sheets_token:
+        return  # dev local : pas de token configure
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    provided = authorization.replace("Bearer ", "").strip()
+    if provided != sheets_token:
+        raise HTTPException(status_code=403, detail="Invalid sheets token")
+
+
+@app.get("/api/sheets/pending-bets")
+def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
+    """Retourne les paris IA generes mais pas encore syncs sur Google Sheets.
+    Format simplifie pour Apps Script :
+    [
+      {
+        "match_id": "T_1234",
+        "date": "2026-05-12",
+        "tour": "ATP",
+        "tournament": "Madrid Open",
+        "surface": "Clay",
+        "player_a": "Carlos Alcaraz",
+        "player_b": "Jannik Sinner",
+        "predicted_winner": "Carlos Alcaraz",
+        "predicted_score": "2-1",
+        "predicted_games": 23,
+        "type": "Principale",
+        "bet_label": "",
+        "odds": "",
+        "model_prob": 58
+      },
+      ...
+    ]
+    """
+    _check_sheets_auth(authorization)
+    import json as _json
+    data_path = os.path.join(FRONTEND_DIR, "data_tennis.json")
+    if not os.path.exists(data_path):
+        return []
+    try:
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    output = []
+    for m in data.get("matches", []):
+        pa = m.get("player_a") or {}
+        pb = m.get("player_b") or {}
+        preds = m.get("predictions") or {}
+        winner_obj = preds.get("winner") or {}
+        prob_a = winner_obj.get("prob_a", 50)
+        prob_b = winner_obj.get("prob_b", 50)
+
+        # Predit vainqueur = joueur avec proba max
+        predicted_winner_name = pa.get("name") if prob_a >= prob_b else pb.get("name")
+        predicted_winner_prob = max(prob_a, prob_b)
+
+        # Score predit (a partir du score model si dispo, sinon "2-0" pour favori, "2-1" si serre)
+        score_obj = preds.get("score") or {}
+        if score_obj.get("predicted"):
+            predicted_score = score_obj.get("predicted")
+        elif predicted_winner_prob >= 65:
+            predicted_score = "2-0"
+        else:
+            predicted_score = "2-1"
+
+        # Nb total jeux predit (si dispo)
+        games_obj = preds.get("total_games") or {}
+        predicted_games = games_obj.get("predicted", 0)
+
+        # === Bet PRINCIPALE (vainqueur predit) ===
+        output.append({
+            "match_id": m.get("id", ""),
+            "api_match_id": m.get("api_id"),
+            "date": (m.get("date") or "")[:10],
+            "time": (m.get("date") or "")[11:16] if len(m.get("date") or "") >= 16 else "",
+            "tour": m.get("tour", ""),
+            "tournament": m.get("tournament", ""),
+            "round": m.get("round", ""),
+            "surface": (m.get("surface") or "").capitalize(),
+            "player_a": pa.get("name", ""),
+            "player_b": pb.get("name", ""),
+            "predicted_winner": predicted_winner_name,
+            "predicted_score": predicted_score,
+            "predicted_games": predicted_games,
+            "type": "Principale",
+            "bet_label": "",
+            "odds": "",
+            "model_prob": predicted_winner_prob,
+        })
+
+        # === Bet RECOMMANDEES (value bets) ===
+        for bet in (m.get("value_bets") or []):
+            output.append({
+                "match_id": m.get("id", ""),
+                "api_match_id": m.get("api_id"),
+                "date": (m.get("date") or "")[:10],
+                "time": (m.get("date") or "")[11:16] if len(m.get("date") or "") >= 16 else "",
+                "tour": m.get("tour", ""),
+                "tournament": m.get("tournament", ""),
+                "round": m.get("round", ""),
+                "surface": (m.get("surface") or "").capitalize(),
+                "player_a": pa.get("name", ""),
+                "player_b": pb.get("name", ""),
+                "predicted_winner": "",
+                "predicted_score": "",
+                "predicted_games": "",
+                "type": "Recommandée",
+                "bet_label": bet.get("market", ""),
+                "odds": bet.get("odds", 0),
+                "model_prob": bet.get("model_prob", 0),
+            })
+
+    return output
+
+
+@app.post("/api/sheets/submit-results")
+def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(None)):
+    """Recoit une liste de resultats depuis Apps Script et les enregistre en DB.
+
+    Payload format :
+    {
+      "results": [
+        {
+          "match_id": "T_1234",
+          "type": "Principale",         // ou "Recommandée"
+          "real_winner": "Carlos Alcaraz",
+          "real_score": "2-0",
+          "real_games": 19,
+          "bet_result": ""              // pour "Recommandée" : Gagné / Perdu
+        },
+        ...
+      ]
+    }
+
+    Retourne le nb de paris mis a jour + erreurs.
+    """
+    _check_sheets_auth(authorization)
+    results = payload.get("results") or []
+    if not isinstance(results, list):
+        raise HTTPException(status_code=400, detail="results must be a list")
+
+    from data.bets_db import BetsDB, get_conn
+    db = BetsDB()
+    updated = 0
+    errors = []
+
+    with get_conn() as conn:
+        for r in results:
+            match_id = r.get("match_id", "")
+            type_str = r.get("type", "Principale")
+            if not match_id:
+                continue
+
+            try:
+                if type_str == "Recommandée":
+                    # Pari recommandee : bet_result donne Gagné/Perdu directement
+                    bet_result = r.get("bet_result", "").lower()
+                    if bet_result in ("gagné", "gagne", "won", "win"):
+                        status = "won"
+                    elif bet_result in ("perdu", "lost", "loss"):
+                        status = "lost"
+                    else:
+                        continue
+                    # Update tous les value bets pending de ce match
+                    conn.execute("""
+                        UPDATE bets SET status = ?, resolved_at = datetime('now')
+                        WHERE match_id = ? AND status = 'pending' AND bet_type = 'value_bet'
+                    """, (status, match_id))
+                    if conn.total_changes > 0:
+                        updated += 1
+                else:
+                    # Pari principale : real_winner determine le winner
+                    real_winner = r.get("real_winner", "")
+                    if not real_winner:
+                        continue
+                    # Chercher le pari pour determiner si winner correspond a la selection
+                    row = conn.execute("""
+                        SELECT id, selection, player_a_name, player_b_name FROM bets
+                        WHERE match_id = ? AND status = 'pending'
+                        LIMIT 1
+                    """, (match_id,)).fetchone()
+                    if not row:
+                        errors.append(f"{match_id}: no pending bet found")
+                        continue
+                    # Si real_winner = selection → won, sinon lost
+                    selection = (row["selection"] or "").strip().lower()
+                    rw = real_winner.strip().lower()
+                    if rw in selection or selection in rw:
+                        status = "won"
+                    else:
+                        status = "lost"
+                    conn.execute("""
+                        UPDATE bets SET status = ?, resolved_at = datetime('now')
+                        WHERE match_id = ? AND status = 'pending'
+                    """, (status, match_id))
+                    if conn.total_changes > 0:
+                        updated += 1
+            except Exception as e:
+                errors.append(f"{match_id}: {e}")
+
+    return {"updated": updated, "errors": errors, "total_received": len(results)}
+
+
+# =============== END GOOGLE SHEETS SYNC ===============
+
+
 def _check_admin_auth(authorization: str):
     """Verifie le token admin. Format attendu : 'Bearer <TOKEN>'"""
     admin_token = os.environ.get("ADMIN_TOKEN")
