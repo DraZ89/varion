@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VARION — Sports Betting Analytics</title>
 
-    <!-- Fonts : pairing distinctif -->
+    <!-- Fonts : Sora (UI) + Inter (chiffres data API) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- Tailwind via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -25,15 +25,45 @@
     <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
 
     <link rel="stylesheet" href="/styles.css" />
+
+    <!-- Config API_BASE selon environnement -->
+    <script>
+      // Detecte l'environnement et configure l'URL du backend
+      // - Local dev : pointe vers localhost:8000 si pas defini sinon
+      // - GitHub Pages prod : pointe vers le backend Render
+      // - Render prod (tout-en-un) : URL relative (meme domaine)
+      (function() {
+        var host = window.location.hostname;
+        if (host === "localhost" || host === "127.0.0.1" || host === "") {
+          // Dev local : assume backend tourne sur port 8000
+          window.API_BASE = "http://localhost:8000";
+        } else if (host.endsWith("github.io")) {
+          // Frontend deploye sur GitHub Pages : pointer vers backend Render
+          // /!\ A modifier avec ta vraie URL Render
+          window.API_BASE = "https://varion-backend.onrender.com";
+        } else {
+          // Cas par defaut (deploiement Render tout-en-un) : URLs relatives
+          window.API_BASE = "";
+        }
+        console.log("[Varion] API_BASE =", window.API_BASE || "(relative)");
+      })();
+    </script>
 </head>
 <body>
     <div id="root"></div>
 
+    <script type="text/babel" data-presets="react" src="/src/i18n.js"></script>
     <script type="text/babel" data-presets="react" src="/src/api.js"></script>
     <script type="text/babel" data-presets="react" src="/src/components/Common.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/Flag.js"></script>
     <script type="text/babel" data-presets="react" src="/src/components/MatchCard.js"></script>
     <script type="text/babel" data-presets="react" src="/src/components/MatchDetail.js"></script>
     <script type="text/babel" data-presets="react" src="/src/components/ValueBets.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/Tennis.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/TennisDetail.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/CompactCard.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/AiStats.js"></script>
+    <script type="text/babel" data-presets="react" src="/src/components/Home.js"></script>
     <script type="text/babel" data-presets="react" src="/src/App.js"></script>
 </body>
 </html>

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+
+# Cache et data locale
+backend/cache/
+backend/data/varion_bets.sqlite
+backend/data/varion_bets.sqlite-journal
+
+# Outputs frontend (générés par refresh) — gardés en git pour que le site fonctionne
+# immédiatement après déploiement, avant le 1er cron job
+# frontend/data_tennis.json
+# frontend/data_football.json
+# frontend/ai_stats.json
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Secrets
+.env
+.env.local
+*.key

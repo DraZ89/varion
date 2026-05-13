@@ -1,6 +1,6 @@
 // API client - Sports Betting Analytics
 // Mode hybride : essaie d'abord l'API live, fallback sur data.json statique
-const API_BASE = "https://varion-backend.onrender.com";
+const API_BASE = window.API_BASE || "http://localhost:8000";
 
 let _staticData = null;
 async function loadStatic() {

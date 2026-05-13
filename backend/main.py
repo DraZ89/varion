@@ -10,25 +10,29 @@ Endpoints :
 - GET  /api/value-bets             -> top value bets tous matchs confondus
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 import sys
 import os
+from typing import Optional
+
+# Path du dossier frontend (au meme niveau que backend)
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data.teams import get_team, get_all_teams
 from data.players import get_team_players, get_lineup_starters
 from data.matches import get_match, get_all_matches, get_h2h
-from engine.team_analysis import calculate_team_overall
-from engine.player_analysis import (
+from engine.football.team_analysis import calculate_team_overall
+from engine.football.player_analysis import (
     analyze_team_players,
     analyze_goalkeeper,
     detect_key_players_to_watch,
 )
-from engine.predictions import predict_match
-from engine.value_bets import detect_value_bets
-from engine.summary import generate_match_summary, confidence_score
+from engine.football.predictions import predict_match
+from engine.football.value_bets import detect_value_bets
+from engine.football.summary import generate_match_summary, confidence_score
 
 
 app = FastAPI(
@@ -339,6 +343,194 @@ def all_value_bets(min_edge: float = 5.0):
     return all_bets
 
 
+# =============== TENNIS ENDPOINTS ===============
+
+def _load_tennis_data():
+    """Charge data_tennis.json (genere par jobs/refresh_tennis.py)."""
+    import json
+    path = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "frontend", "data_tennis.json"
+    ))
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+@app.get("/api/tennis/matches")
+def tennis_matches(tour: str = None):
+    """Matchs tennis du jour. Filtrable par tour (atp/wta)."""
+    data = _load_tennis_data()
+    if not data:
+        raise HTTPException(404, "Tennis data not yet generated. Run python -m jobs.refresh_tennis")
+
+    matches = data.get("matches", [])
+    if tour:
+        matches = [m for m in matches if m.get("tour", "").lower() == tour.lower()]
+    return matches
+
+
+@app.get("/api/tennis/match/{match_id}")
+def tennis_match_detail(match_id: str):
+    """Detail d'un match tennis."""
+    data = _load_tennis_data()
+    if not data:
+        raise HTTPException(404, "Tennis data not yet generated")
+    for m in data.get("matches", []):
+        if m["id"] == match_id:
+            return m
+    raise HTTPException(404, f"Match {match_id} not found")
+
+
+@app.get("/api/tennis/value-bets")
+def tennis_value_bets(min_edge: float = 5.0, tour: str = None):
+    """Top value bets tennis."""
+    data = _load_tennis_data()
+    if not data:
+        return []
+    bets = [b for b in data.get("value_bets", []) if b["edge_pct"] >= min_edge]
+    if tour:
+        bets = [b for b in bets if b.get("tour", "").lower() == tour.lower()]
+    return bets
+
+
+@app.get("/api/tennis/stats")
+def tennis_stats():
+    """Stats globales tennis."""
+    data = _load_tennis_data()
+    if not data:
+        return {"available": False}
+    return {
+        "available": True,
+        "generated_at": data.get("generated_at"),
+        "tours": data.get("tours", {}),
+        "total_matches": len(data.get("matches", [])),
+        "total_value_bets": len(data.get("value_bets", [])),
+    }
+
+
+# =============== AI STATS / TRACKING DES PARIS ===============
+
+@app.get("/api/ai-stats")
+def ai_stats():
+    """Stats de fiabilite de l'IA Varion (paris valides/perdus)."""
+    try:
+        from data.bets_db import BetsDB
+        db = BetsDB()
+        return db.export_to_dict()
+    except Exception as e:
+        return {"error": str(e), "global": {"total": 0, "won": 0, "lost": 0,
+                "settled": 0, "win_rate_pct": 0, "roi_pct": 0}}
+
+
+@app.get("/api/tennis-data")
+def get_tennis_data():
+    """Renvoie le contenu de data_tennis.json (genere par refresh_tennis).
+    Endpoint utile quand le frontend est heberge separement (GitHub Pages, etc.)
+    """
+    import json as _json
+    data_path = os.path.join(FRONTEND_DIR, "data_tennis.json")
+    if not os.path.exists(data_path):
+        return {"matches": [], "generated_at": None, "error": "Pas encore de donnees. Lancez /api/admin/refresh-tennis"}
+    try:
+        with open(data_path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/football-data")
+def get_football_data():
+    """Renvoie le contenu de data.json (foot, actuellement inactif)."""
+    import json as _json
+    data_path = os.path.join(FRONTEND_DIR, "data.json")
+    if not os.path.exists(data_path):
+        return {"matches": [], "error": "Foot inactif"}
+    try:
+        with open(data_path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ai-stats/resolve")
+def resolve_pending_bets(authorization: Optional[str] = Header(None)):
+    """Trigger manuel pour resoudre les paris pending (admin).
+    Necessite un header Authorization: Bearer <ADMIN_TOKEN>
+    """
+    _check_admin_auth(authorization)
+    try:
+        from jobs.resolve_bets import main as resolve_main
+        resolve_main()
+        from data.bets_db import BetsDB
+        return BetsDB().get_global_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/refresh-tennis")
+def admin_refresh_tennis(authorization: Optional[str] = Header(None)):
+    """Trigger refresh tennis (appelable depuis cron-job.org).
+    Necessite un header Authorization: Bearer <ADMIN_TOKEN>
+    """
+    _check_admin_auth(authorization)
+    try:
+        from jobs.refresh_tennis import main as refresh_main
+        result = refresh_main()
+        return {"status": "ok", "result": result if result else "completed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/resolve-bets")
+def admin_resolve_bets(authorization: Optional[str] = Header(None)):
+    """Alias public de /api/ai-stats/resolve pour cron-job.org"""
+    return resolve_pending_bets(authorization)
+
+
+def _check_admin_auth(authorization: str):
+    """Verifie le token admin. Format attendu : 'Bearer <TOKEN>'"""
+    admin_token = os.environ.get("ADMIN_TOKEN")
+    if not admin_token:
+        # En dev local : pas de token configure, on laisse passer (utile pour tests)
+        return
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    provided = authorization.replace("Bearer ", "").strip()
+    if provided != admin_token:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+# =============== FRONTEND STATIC FILES ===============
+# Le backend sert aussi le frontend statique en production
+# (1 seul service Render au lieu de 2)
+
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+if os.path.exists(FRONTEND_DIR):
+    # Servir les fichiers statiques (js, css, assets)
+    app.mount("/src", StaticFiles(directory=os.path.join(FRONTEND_DIR, "src")), name="src")
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets"), check_dir=False), name="assets")
+
+    # Route catch-all : sert index.html pour toutes les autres URLs (SPA)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        # Si le fichier existe dans frontend/, on le sert
+        file_path = os.path.join(FRONTEND_DIR, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Sinon fallback sur index.html (single-page app)
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Frontend not found")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

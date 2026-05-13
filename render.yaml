@@ -1,0 +1,23 @@
+# Render.com config-as-code
+# Backend FastAPI uniquement (le frontend est sur GitHub Pages)
+
+services:
+  - type: web
+    name: varion-backend
+    runtime: python
+    region: frankfurt
+    plan: free
+    branch: main
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: RAPIDAPI_KEY
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: ADMIN_TOKEN
+        generateValue: true
+    healthCheckPath: /

@@ -117,7 +117,7 @@ window.MatchDetail = function MatchDetail({ matchId, onBack }) {
           </span>
         </div>
         <div className="card p-6">
-          <p className="text-[var(--text-primary)] leading-relaxed text-base" style={{ fontFamily: "Manrope" }}>
+          <p className="text-[var(--text-primary)] leading-relaxed text-base" style={{ fontFamily: "Sora, sans-serif" }}>
             {summary}
           </p>
         </div>
