@@ -441,13 +441,39 @@ window.TennisDetail = function TennisDetail({ match, onBack }) {
   const probB = preds.winner?.prob_b ?? 50;
   const aWins = probA > probB;
 
-  // Label des cotes : reelles ou estimees
+  // Label des cotes : reelles (API directe) / The Odds API / indisponibles
   const oddsSource = (odds._source || "none");
+  const bookmakerLabel = odds._bookmaker || "";
+  const isRealOdds = (oddsSource === "api" || oddsSource === "the_odds_api") && odds["1"] && odds["2"];
   const cotesLabel = (
     <>
       {window.t("ai.bookmakerOdds", "Cotes bookmaker")}
-      {oddsSource !== "api" && (
-        <span className="odds-source-badge estimated" title="Estimees depuis le modele">EST.</span>
+      {oddsSource === "the_odds_api" && bookmakerLabel && (
+        <span className="odds-source-badge" title={`Cotes en direct via The Odds API (${bookmakerLabel})`} style={{
+          background: "rgba(115, 245, 161, 0.15)",
+          border: "1px solid var(--win)",
+          color: "var(--win)",
+        }}>
+          {bookmakerLabel.toUpperCase()}
+        </span>
+      )}
+      {oddsSource === "api" && (
+        <span className="odds-source-badge" title="Cotes API Tennis" style={{
+          background: "rgba(91, 157, 255, 0.15)",
+          border: "1px solid var(--accent)",
+          color: "var(--accent)",
+        }}>
+          API
+        </span>
+      )}
+      {!isRealOdds && (
+        <span className="odds-source-badge" title="Aucun bookmaker ne propose de cotes pour ce match" style={{
+          background: "rgba(255, 184, 77, 0.15)",
+          border: "1px solid var(--warn)",
+          color: "var(--warn)",
+        }}>
+          {window.t("ai.notAvailable", "INDISPO")}
+        </span>
       )}
     </>
   );
@@ -567,16 +593,22 @@ window.TennisDetail = function TennisDetail({ match, onBack }) {
               {/* Cotes */}
               <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14, marginBottom: 14 }}>
                 <div className="label-uppercase mb-2" style={{ color: "var(--ink-3)" }}>{cotesLabel}</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="text-center" style={{ background: "var(--bg-0)", padding: "10px 8px", borderRadius: 12, border: "1px solid var(--line)" }}>
-                    <div className="text-xs" style={{ color: "var(--ink-3)" }}>{(pa.name || "?").split(" ").pop()}</div>
-                    <div className="font-data" style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{(odds["1"] || 1).toFixed(2)}</div>
+                {(!odds["1"] || !odds["2"] || odds["1"] < 1.01) ? (
+                  <div className="text-center" style={{ padding: "14px 8px", color: "var(--ink-3)", fontStyle: "italic", fontSize: 13 }}>
+                    {window.t("ai.oddsUnavailable", "Cote indisponible chez les bookmakers")}
                   </div>
-                  <div className="text-center" style={{ background: "var(--bg-0)", padding: "10px 8px", borderRadius: 12, border: "1px solid var(--line)" }}>
-                    <div className="text-xs" style={{ color: "var(--ink-3)" }}>{(pb.name || "?").split(" ").pop()}</div>
-                    <div className="font-data" style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{(odds["2"] || 1).toFixed(2)}</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="text-center" style={{ background: "var(--bg-0)", padding: "10px 8px", borderRadius: 12, border: "1px solid var(--line)" }}>
+                      <div className="text-xs" style={{ color: "var(--ink-3)" }}>{(pa.name || "?").split(" ").pop()}</div>
+                      <div className="font-data" style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{odds["1"].toFixed(2)}</div>
+                    </div>
+                    <div className="text-center" style={{ background: "var(--bg-0)", padding: "10px 8px", borderRadius: 12, border: "1px solid var(--line)" }}>
+                      <div className="text-xs" style={{ color: "var(--ink-3)" }}>{(pb.name || "?").split(" ").pop()}</div>
+                      <div className="font-data" style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{odds["2"].toFixed(2)}</div>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Total games */}
@@ -654,7 +686,7 @@ window.TennisDetail = function TennisDetail({ match, onBack }) {
                           ) : (
                             <span className={`value-bet-edge ${isHot ? "hot" : ""}`}>+{b.edge_pct.toFixed(1)}%</span>
                           )}
-                          <span className="value-bet-odd">{b.odds.toFixed(2)}</span>
+                          <span className="value-bet-odd">{b.odds && b.odds >= 1.01 ? b.odds.toFixed(2) : "—"}</span>
                         </div>
                       </div>
                     );

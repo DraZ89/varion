@@ -177,7 +177,10 @@ class BetsDB:
                     bet.get("model_prob", 0),
                     bet.get("implied_prob", 0),
                     bet.get("confidence", "medium"),
-                    bet.get("type", "value_bet"),  # value_bet ou model_pick
+                    # bet_type : value_bet / model_pick / model_pick_no_odds
+                    # → model_pick_no_odds = pari trackable pour fiabilite mais pas pour ROI
+                    ("model_pick_no_odds" if bet.get("no_real_odds")
+                     else bet.get("type", "value_bet")),
                 ))
                 return conn.total_changes > 0
         except Exception as e:

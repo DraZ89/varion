@@ -96,16 +96,28 @@ def _build_match_embed(match: dict) -> dict:
         "inline": True,
     })
 
-    # Field 2 : cotes (estimees ou reelles)
+    # Field 2 : cotes (reelles seulement, sinon "Indispo")
     odds = match.get("odds") or {}
     odd1 = odds.get("1")
     odd2 = odds.get("2")
     odds_source = odds.get("_source", "none")
-    odds_label = "Cotes" if odds_source == "api" else "Cotes (est.)"
-    if odd1 and odd2:
+    bookmaker = odds.get("_bookmaker", "")
+    if odd1 and odd2 and odds_source in ("api", "the_odds_api"):
+        # Vraies cotes : afficher avec le bookmaker source
+        if odds_source == "the_odds_api" and bookmaker:
+            odds_label = f"Cotes ({bookmaker})"
+        else:
+            odds_label = "Cotes"
         fields.append({
             "name": odds_label,
             "value": f"`{float(odd1):.2f}` / `{float(odd2):.2f}`",
+            "inline": True,
+        })
+    else:
+        # Pas de cote bookmaker : on affiche un placeholder
+        fields.append({
+            "name": "Cotes",
+            "value": "*Indispo chez les bookmakers*",
             "inline": True,
         })
 

@@ -57,7 +57,9 @@ def detect_tennis_value_bets(predictions: dict, odds: dict,
     bets = []
 
     # Si les cotes ne sont pas reelles (estimees ou absentes), pas de value bet
-    if odds.get("_source") != "api":
+    # Sources acceptees : "api" (RapidAPI Tennis) et "the_odds_api" (bookmakers reels)
+    source = odds.get("_source")
+    if source not in ("api", "the_odds_api"):
         return bets
 
     winner = predictions.get("winner", {})
@@ -105,49 +107,49 @@ def detect_tennis_value_bets(predictions: dict, odds: dict,
 def generate_model_picks(predictions: dict, odds: dict,
                          player_a_name: str, player_b_name: str,
                          player_a_id=None, player_b_id=None) -> list:
-    """Genere des paris bases uniquement sur la confiance du modele (sans cote API).
+    """Genere des paris bases uniquement sur la confiance du modele.
 
-    Utilise pour tracker la fiabilite brute de l'IA quand on n'a pas de cotes
-    bookmaker reelles. On ne genere un pick que si :
-    - Le modele predit un favori avec >= MIN_MODEL_CONFIDENCE (70% par defaut)
-    - Pas de value bet API deja genere pour ce match (sinon doublon)
+    Le model_pick est independant des cotes : il analyse les stats des joueurs
+    (ELO, forme, H2H, surface, etc.) et picke le favori si confiance >= seuil.
 
-    La 'cote' affichee est la cote estimee depuis nos predictions.
+    Si une cote bookmaker (the_odds_api) est dispo, on la stocke pour mesurer
+    l'edge plus tard. Sinon, on stocke 0 dans 'odds' (= pas evaluable ROI).
     """
     picks = []
     winner = predictions.get("winner", {})
     prob_a = winner.get("prob_a", 0) / 100
     prob_b = winner.get("prob_b", 0) / 100
 
-    # On ne pick que le favori avec confiance >= seuil
-    if prob_a >= MIN_MODEL_CONFIDENCE:
-        picks.append({
-            "market": f"Victoire {player_a_name}",
-            "market_key": "1",
-            "selection": player_a_name,
-            "selection_player_id": player_a_id,
-            "odds": float(odds.get("1") or round(1.0 / prob_a, 2)),
-            "model_prob": round(prob_a * 100, 2),
-            "implied_prob": round(implied_probability(odds.get("1") or 1.5) * 100, 2) if odds.get("1") else 0,
-            "edge_pct": 0,  # pas d'edge mesurable sans vraie cote
-            "confidence": "model_only",
-            "type": "model_pick",  # marqueur pour distinguer dans la DB
-            "explanation": f"Le modele donne {prob_a*100:.1f}% de chances a {player_a_name}.",
-        })
-    elif prob_b >= MIN_MODEL_CONFIDENCE:
-        picks.append({
-            "market": f"Victoire {player_b_name}",
-            "market_key": "2",
-            "selection": player_b_name,
-            "selection_player_id": player_b_id,
-            "odds": float(odds.get("2") or round(1.0 / prob_b, 2)),
-            "model_prob": round(prob_b * 100, 2),
-            "implied_prob": round(implied_probability(odds.get("2") or 1.5) * 100, 2) if odds.get("2") else 0,
-            "edge_pct": 0,
+    # Cote reelle uniquement si source = the_odds_api ou api (RapidAPI)
+    source = odds.get("_source", "none")
+    has_real_odds = source in ("the_odds_api", "api")
+
+    def _make_pick(name, market_key, prob, pid):
+        real_odd = float(odds.get(market_key, 0)) if has_real_odds else 0
+        implied = round(implied_probability(real_odd) * 100, 2) if real_odd > 1.0 else 0
+        edge = 0
+        if real_odd > 1.0 and prob > 0:
+            edge = round(((prob * real_odd) - 1) * 100, 2)
+        return {
+            "market": f"Victoire {name}",
+            "market_key": market_key,
+            "selection": name,
+            "selection_player_id": pid,
+            "odds": real_odd,                 # 0 si pas de cote bookmaker
+            "model_prob": round(prob * 100, 2),
+            "implied_prob": implied,
+            "edge_pct": edge,
             "confidence": "model_only",
             "type": "model_pick",
-            "explanation": f"Le modele donne {prob_b*100:.1f}% de chances a {player_b_name}.",
-        })
+            "no_real_odds": not has_real_odds, # flag pour tracking DB
+            "explanation": f"Le modele donne {prob*100:.1f}% de chances a {name}.",
+        }
+
+    if prob_a >= MIN_MODEL_CONFIDENCE:
+        picks.append(_make_pick(player_a_name, "1", prob_a, player_a_id))
+    elif prob_b >= MIN_MODEL_CONFIDENCE:
+        picks.append(_make_pick(player_b_name, "2", prob_b, player_b_id))
+
     return picks
 
 

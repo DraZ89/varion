@@ -59,6 +59,18 @@ def main(force: bool = False, test_output: bool = False):
     api = TennisAPI()
     cache_stats = cache.stats()
     print(f"Cache : {cache_stats['entries']} entrees, {cache_stats['size_kb']} KB")
+
+    # The Odds API (optionnel : si pas de cle, on continue sans)
+    odds_api_client = None
+    try:
+        if os.environ.get("ODDS_API_KEY"):
+            from providers.the_odds_api import TheOddsAPI
+            odds_api_client = TheOddsAPI()
+            print("The Odds API : active (cotes reelles bookmakers)")
+        else:
+            print("The Odds API : inactif (ODDS_API_KEY non definie)")
+    except Exception as e:
+        print(f"The Odds API : inactif ({e})")
     print()
 
     output = {
@@ -70,6 +82,8 @@ def main(force: bool = False, test_output: bool = False):
 
     quota_hit = False
     total_matches_analyzed = 0  # cap global ATP+WTA
+    odds_api_hits = 0  # compteur : matchs avec vraies cotes
+    odds_api_misses = 0  # matchs sans cotes API (fallback estimation)
 
     for tour in TOURS:
         if quota_hit:
@@ -350,9 +364,40 @@ def main(force: bool = False, test_output: bool = False):
                     max_sets=mapped_match["max_sets"],
                 )
 
-                # Si l'API n'a pas fourni de cotes, on les estime depuis nos predictions
-                if mapped_match["odds"].get("_source") == "none":
-                    mapped_match["odds"] = tennis_mapper.compute_fair_odds_from_predictions(preds)
+                # === COTES : The Odds API en priorite 1 ===
+                # On essaie TOUJOURS The Odds API d'abord (rare que RapidAPI Tennis donne des cotes)
+                real_odds = None
+                if odds_api_client is not None:
+                    try:
+                        real_odds = odds_api_client.find_match_odds(
+                            p_a["name"], p_b["name"],
+                            tour=tour.lower(),
+                            match_date_iso=mapped_match.get("date"),
+                        )
+                    except Exception as e:
+                        print(f"  [WARN] OddsAPI find_match : {e}")
+
+                if real_odds:
+                    # Priorite 1 : cotes bookmaker reelles via The Odds API
+                    mapped_match["odds"] = {
+                        "1": real_odds["odd1"],
+                        "2": real_odds["odd2"],
+                        "_source": "the_odds_api",
+                        "_bookmaker": real_odds["bookmaker"],
+                        "_bookmaker_key": real_odds["bookmaker_key"],
+                        "_last_update": real_odds["last_update"],
+                        "_alternates": real_odds.get("alternates", []),
+                    }
+                    odds_api_hits += 1
+                elif mapped_match["odds"].get("_source") == "api":
+                    # Priorite 2 : cotes deja fournies par RapidAPI Tennis (rare)
+                    pass
+                else:
+                    # Pas de cotes du tout : on NE met PAS de fallback estimation
+                    # → odds vide, on affichera "Cote indisponible"
+                    # → pas de value_bet, mais model_pick OK (base sur stats joueurs)
+                    mapped_match["odds"] = {"_source": "none"}
+                    odds_api_misses += 1
 
                 # Value bets (cotes API uniquement)
                 bets = detect_tennis_value_bets(
@@ -459,7 +504,13 @@ def main(force: bool = False, test_output: bool = False):
     print(f"  WTA : {output['tours'].get('wta', {}).get('matches_analyzed', 0)} matchs")
     print(f"  Total value bets : {len(output['value_bets'])}")
     print(f"  Fichier : {output_path} ({size_kb:.1f} KB)")
-    print(f"  Requetes API : {api.calls_made}")
+    print(f"  Requetes API Tennis : {api.calls_made}")
+    if odds_api_client is not None:
+        total_attempts = odds_api_hits + odds_api_misses
+        if total_attempts > 0:
+            print(f"  The Odds API : {odds_api_hits}/{total_attempts} matchs avec vraies cotes ({100*odds_api_hits//total_attempts}%)")
+            if odds_api_client.quota_remaining:
+                print(f"  Quota Odds API restant : {odds_api_client.quota_remaining}")
     print(f"  Cache : {cache.stats()}")
     if quota_hit:
         print(f"\n  ! Quota epuise pendant le run, certaines donnees manquent.")
