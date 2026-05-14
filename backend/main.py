@@ -720,12 +720,14 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                     else:
                         continue
                     # Update tous les value bets pending de ce match
-                    conn.execute("""
+                    cur = conn.execute("""
                         UPDATE bets SET status = ?, resolved_at = datetime('now')
-                        WHERE match_id = ? AND status = 'pending' AND bet_type = 'value_bet'
+                        WHERE match_id = ? AND status = 'pending' AND bet_type IN ('value_bet', 'model_pick', 'model_pick_no_odds')
                     """, (status, match_id))
-                    if conn.total_changes > 0:
-                        updated += 1
+                    if cur.rowcount > 0:
+                        updated += cur.rowcount
+                    else:
+                        errors.append(f"{match_id}: no pending value bet found (Recommandée)")
                 else:
                     # Pari principale : real_winner determine le winner
                     real_winner = r.get("real_winner", "")
@@ -738,7 +740,7 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                         LIMIT 1
                     """, (match_id,)).fetchone()
                     if not row:
-                        errors.append(f"{match_id}: no pending bet found")
+                        errors.append(f"{match_id}: no pending bet found (Principale)")
                         continue
                     # Si real_winner = selection → won, sinon lost
                     selection = (row["selection"] or "").strip().lower()
@@ -747,12 +749,12 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                         status = "won"
                     else:
                         status = "lost"
-                    conn.execute("""
+                    cur = conn.execute("""
                         UPDATE bets SET status = ?, resolved_at = datetime('now')
                         WHERE match_id = ? AND status = 'pending'
                     """, (status, match_id))
-                    if conn.total_changes > 0:
-                        updated += 1
+                    if cur.rowcount > 0:
+                        updated += cur.rowcount
             except Exception as e:
                 errors.append(f"{match_id}: {e}")
 
