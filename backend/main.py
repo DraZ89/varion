@@ -506,6 +506,46 @@ def _check_sheets_auth(authorization: str):
         raise HTTPException(status_code=403, detail="Invalid sheets token")
 
 
+# Mapping surface anglais -> francais
+_SURFACE_FR = {
+    "hard": "Dur",
+    "clay": "Terre battue",
+    "grass": "Gazon",
+    "indoor hard": "Dur indoor",
+    "carpet": "Moquette",
+}
+
+
+def _translate_surface_fr(surface_en: str) -> str:
+    if not surface_en:
+        return ""
+    return _SURFACE_FR.get(surface_en.lower(), surface_en.capitalize())
+
+
+def _detect_tour_level(match: dict) -> str:
+    """Determine le niveau du tournoi : Challenger / ATP 250 / Masters 1000 / Grand Slam / etc.
+
+    1. Cherche dans tournament_type ('Grand Slam', 'Masters 1000', 'ATP 250', 'Challenger', etc.)
+    2. Fallback : detection depuis le nom du tournoi (heuristique mots-cles)
+    3. Fallback final : retourne le tour (ATP/WTA)
+    """
+    tt = (match.get("tournament_type") or "").strip()
+    if tt and tt != "Other":
+        return tt  # Valeur API utilisable directement
+    # Heuristique : "Challenger" dans le nom du tournoi
+    tname = (match.get("tournament") or "").lower()
+    if "challenger" in tname:
+        return "Challenger"
+    if "futures" in tname or "itf" in tname:
+        return "ITF"
+    if "grand slam" in tname or "australian open" in tname or "roland" in tname or "wimbledon" in tname or "us open" in tname:
+        return "Grand Slam"
+    if "masters" in tname or "1000" in tname:
+        return "Masters 1000"
+    # Fallback final : ATP / WTA
+    return match.get("tour", "")
+
+
 @app.get("/api/sheets/pending-bets")
 def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
     """Retourne les paris IA generes mais pas encore syncs sur Google Sheets.
@@ -554,18 +594,34 @@ def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
         predicted_winner_name = pa.get("name") if prob_a >= prob_b else pb.get("name")
         predicted_winner_prob = max(prob_a, prob_b)
 
-        # Score predit (a partir du score model si dispo, sinon "2-0" pour favori, "2-1" si serre)
-        score_obj = preds.get("score") or {}
-        if score_obj.get("predicted"):
-            predicted_score = score_obj.get("predicted")
-        elif predicted_winner_prob >= 65:
-            predicted_score = "2-0"
+        # Score predit : cohérent avec le site (utilise preds.sets_score, max des 4 probas)
+        sets_score = preds.get("sets_score") or {}
+        score_options = [
+            ("2-0", "a", sets_score.get("2-0_a", 0)),
+            ("2-1", "a", sets_score.get("2-1_a", 0)),
+            ("2-0", "b", sets_score.get("2-0_b", 0)),
+            ("2-1", "b", sets_score.get("2-1_b", 0)),
+        ]
+        # Filtrer par vainqueur prédit
+        winner_side = "a" if prob_a >= prob_b else "b"
+        winner_scores = [(s, side, p) for (s, side, p) in score_options if side == winner_side]
+        if winner_scores:
+            # Prendre le score le plus probable parmi les 2 du vainqueur
+            best = max(winner_scores, key=lambda x: x[2])
+            predicted_score = best[0]
         else:
-            predicted_score = "2-1"
+            # Fallback si sets_score absent
+            predicted_score = "2-0" if predicted_winner_prob >= 65 else "2-1"
 
-        # Nb total jeux predit (si dispo)
+        # Nb total jeux predit (champ expected_total dans predictions.total_games)
         games_obj = preds.get("total_games") or {}
-        predicted_games = games_obj.get("predicted", 0)
+        predicted_games = games_obj.get("expected_total") or games_obj.get("predicted", 0)
+        if predicted_games:
+            # Arrondir au demi pour lisibilite : 22.6 → 22.5
+            predicted_games = round(float(predicted_games) * 2) / 2
+
+        surface_fr = _translate_surface_fr(m.get("surface") or "")
+        tier_label = _detect_tour_level(m)
 
         # === Bet PRINCIPALE (vainqueur predit) ===
         output.append({
@@ -574,9 +630,10 @@ def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
             "date": (m.get("date") or "")[:10],
             "time": (m.get("date") or "")[11:16] if len(m.get("date") or "") >= 16 else "",
             "tour": m.get("tour", ""),
+            "tier": tier_label,
             "tournament": m.get("tournament", ""),
             "round": m.get("round", ""),
-            "surface": (m.get("surface") or "").capitalize(),
+            "surface": surface_fr,
             "player_a": pa.get("name", ""),
             "player_b": pb.get("name", ""),
             "predicted_winner": predicted_winner_name,
@@ -596,9 +653,10 @@ def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
                 "date": (m.get("date") or "")[:10],
                 "time": (m.get("date") or "")[11:16] if len(m.get("date") or "") >= 16 else "",
                 "tour": m.get("tour", ""),
+                "tier": tier_label,
                 "tournament": m.get("tournament", ""),
                 "round": m.get("round", ""),
-                "surface": (m.get("surface") or "").capitalize(),
+                "surface": surface_fr,
                 "player_a": pa.get("name", ""),
                 "player_b": pb.get("name", ""),
                 "predicted_winner": "",
