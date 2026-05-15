@@ -702,6 +702,7 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
     updated = 0
     errors = []
 
+    print(f"[Sheets] Submit-results : {len(results)} paris recus")
     with get_conn() as conn:
         for r in results:
             match_id = r.get("match_id", "")
@@ -718,12 +719,14 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                     elif bet_result in ("perdu", "lost", "loss"):
                         status = "lost"
                     else:
+                        print(f"  [Skip] {match_id} : bet_result '{bet_result}' invalide")
                         continue
                     # Update tous les value bets pending de ce match
                     cur = conn.execute("""
                         UPDATE bets SET status = ?, resolved_at = datetime('now')
                         WHERE match_id = ? AND status = 'pending' AND bet_type IN ('value_bet', 'model_pick', 'model_pick_no_odds')
                     """, (status, match_id))
+                    print(f"  [Reco] {match_id} → {status} : {cur.rowcount} pari(s) MAJ")
                     if cur.rowcount > 0:
                         updated += cur.rowcount
                     else:
@@ -735,12 +738,22 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                         continue
                     # Chercher le pari pour determiner si winner correspond a la selection
                     row = conn.execute("""
-                        SELECT id, selection, player_a_name, player_b_name FROM bets
+                        SELECT id, selection, player_a_name, player_b_name, status FROM bets
                         WHERE match_id = ? AND status = 'pending'
                         LIMIT 1
                     """, (match_id,)).fetchone()
                     if not row:
-                        errors.append(f"{match_id}: no pending bet found (Principale)")
+                        # Debug : verifier si le match_id existe mais resolved deja
+                        any_row = conn.execute(
+                            "SELECT status FROM bets WHERE match_id = ? LIMIT 1",
+                            (match_id,)
+                        ).fetchone()
+                        if any_row:
+                            print(f"  [Skip] {match_id} : trouve mais status={any_row['status']} (deja resolu)")
+                            errors.append(f"{match_id}: already resolved (status={any_row['status']})")
+                        else:
+                            print(f"  [Skip] {match_id} : PAS TROUVE en DB")
+                            errors.append(f"{match_id}: not in DB")
                         continue
                     # Si real_winner = selection → won, sinon lost
                     selection = (row["selection"] or "").strip().lower()
@@ -753,11 +766,14 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                         UPDATE bets SET status = ?, resolved_at = datetime('now')
                         WHERE match_id = ? AND status = 'pending'
                     """, (status, match_id))
+                    print(f"  [Princ] {match_id} (sel='{row['selection']}', winner='{real_winner}') → {status} : {cur.rowcount} MAJ")
                     if cur.rowcount > 0:
                         updated += cur.rowcount
             except Exception as e:
+                print(f"  [Error] {match_id} : {e}")
                 errors.append(f"{match_id}: {e}")
 
+    print(f"[Sheets] Submit-results : {updated} pari(s) mis a jour, {len(errors)} erreurs")
     return {"updated": updated, "errors": errors, "total_received": len(results)}
 
 
