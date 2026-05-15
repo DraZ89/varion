@@ -712,7 +712,6 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
 
             try:
                 if type_str == "Recommandée":
-                    # Pari recommandee : bet_result donne Gagné/Perdu directement
                     bet_result = r.get("bet_result", "").lower()
                     if bet_result in ("gagné", "gagne", "won", "win"):
                         status = "won"
@@ -721,29 +720,38 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                     else:
                         print(f"  [Skip] {match_id} : bet_result '{bet_result}' invalide")
                         continue
-                    # Update tous les value bets pending de ce match
-                    cur = conn.execute("""
-                        UPDATE bets SET status = ?, resolved_at = datetime('now')
+                    # Recuperer les cotes des paris pending pour calculer profit_units
+                    rows = conn.execute("""
+                        SELECT id, odds FROM bets
                         WHERE match_id = ? AND status = 'pending' AND bet_type IN ('value_bet', 'model_pick', 'model_pick_no_odds')
-                    """, (status, match_id))
-                    print(f"  [Reco] {match_id} → {status} : {cur.rowcount} pari(s) MAJ")
-                    if cur.rowcount > 0:
-                        updated += cur.rowcount
-                    else:
-                        errors.append(f"{match_id}: no pending value bet found (Recommandée)")
+                    """, (match_id,)).fetchall()
+                    if not rows:
+                        print(f"  [Skip] {match_id} : aucun pari pending value/model (Recommandee)")
+                        errors.append(f"{match_id}: no pending value bet found (Recommandee)")
+                        continue
+                    # Update individuel pour calculer profit
+                    total_updated = 0
+                    for br in rows:
+                        odds_val = float(br["odds"] or 0)
+                        profit = (odds_val - 1) if status == "won" else -1
+                        cur = conn.execute("""
+                            UPDATE bets SET status = ?, settled_at = datetime('now'), profit_units = ?
+                            WHERE id = ?
+                        """, (status, profit, br["id"]))
+                        total_updated += cur.rowcount
+                    print(f"  [Reco] {match_id} -> {status} : {total_updated} pari(s) MAJ")
+                    if total_updated > 0:
+                        updated += total_updated
                 else:
-                    # Pari principale : real_winner determine le winner
                     real_winner = r.get("real_winner", "")
                     if not real_winner:
                         continue
-                    # Chercher le pari pour determiner si winner correspond a la selection
                     row = conn.execute("""
-                        SELECT id, selection, player_a_name, player_b_name, status FROM bets
+                        SELECT id, selection, player_a_name, player_b_name, status, odds FROM bets
                         WHERE match_id = ? AND status = 'pending'
                         LIMIT 1
                     """, (match_id,)).fetchone()
                     if not row:
-                        # Debug : verifier si le match_id existe mais resolved deja
                         any_row = conn.execute(
                             "SELECT status FROM bets WHERE match_id = ? LIMIT 1",
                             (match_id,)
@@ -755,18 +763,19 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
                             print(f"  [Skip] {match_id} : PAS TROUVE en DB")
                             errors.append(f"{match_id}: not in DB")
                         continue
-                    # Si real_winner = selection → won, sinon lost
                     selection = (row["selection"] or "").strip().lower()
                     rw = real_winner.strip().lower()
                     if rw in selection or selection in rw:
                         status = "won"
                     else:
                         status = "lost"
+                    odds_val = float(row["odds"] or 0)
+                    profit = (odds_val - 1) if status == "won" else -1
                     cur = conn.execute("""
-                        UPDATE bets SET status = ?, resolved_at = datetime('now')
+                        UPDATE bets SET status = ?, settled_at = datetime('now'), profit_units = ?
                         WHERE match_id = ? AND status = 'pending'
-                    """, (status, match_id))
-                    print(f"  [Princ] {match_id} (sel='{row['selection']}', winner='{real_winner}') → {status} : {cur.rowcount} MAJ")
+                    """, (status, profit, match_id))
+                    print(f"  [Princ] {match_id} (sel='{row['selection']}', winner='{real_winner}') -> {status} : {cur.rowcount} MAJ")
                     if cur.rowcount > 0:
                         updated += cur.rowcount
             except Exception as e:
