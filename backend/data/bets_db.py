@@ -31,11 +31,16 @@ USE_TURSO = bool(TURSO_URL and TURSO_TOKEN)
 
 if USE_TURSO:
     try:
-        import libsql_experimental as libsql
+        import libsql
         print(f"[BetsDB] Mode TURSO : {TURSO_URL[:50]}...")
     except ImportError:
-        print("[BetsDB] libsql_experimental non installe, fallback SQLite local")
-        USE_TURSO = False
+        try:
+            # Fallback : ancien nom du package
+            import libsql_experimental as libsql
+            print(f"[BetsDB] Mode TURSO (libsql_experimental) : {TURSO_URL[:50]}...")
+        except ImportError:
+            print("[BetsDB] libsql non installe, fallback SQLite local")
+            USE_TURSO = False
 
 
 class _TursoConnWrapper:
