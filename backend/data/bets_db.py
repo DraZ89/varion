@@ -18,6 +18,126 @@ Usage :
 
 import os
 import sqlite3
+import os
+
+
+# =========== TURSO / LIBSQL ADAPTER ===========
+# Si TURSO_DB_URL et TURSO_AUTH_TOKEN sont definis, on utilise Turso (DB cloud persistante).
+# Sinon, fallback sur SQLite local (dev / Render free sans persistance).
+
+TURSO_URL = os.environ.get("TURSO_DB_URL", "").strip()
+TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+USE_TURSO = bool(TURSO_URL and TURSO_TOKEN)
+
+if USE_TURSO:
+    try:
+        import libsql_experimental as libsql
+        print(f"[BetsDB] Mode TURSO : {TURSO_URL[:50]}...")
+    except ImportError:
+        print("[BetsDB] libsql_experimental non installe, fallback SQLite local")
+        USE_TURSO = False
+
+
+class _TursoConnWrapper:
+    """Wrapper qui imite l'interface sqlite3.Connection pour libsql.
+
+    Permet de garder tout le code existant inchange (with get_conn() as conn: ...).
+    """
+
+    def __init__(self):
+        self._conn = libsql.connect(database=TURSO_URL, auth_token=TURSO_TOKEN)
+        # Active row_factory equivalent : retourner des dicts (acces par nom de colonne)
+
+    def execute(self, sql, params=()):
+        cursor = self._conn.execute(sql, params)
+        return _TursoCursor(cursor)
+
+    def executescript(self, script):
+        # libsql ne supporte pas executescript directement, on split par ';'
+        statements = [s.strip() for s in script.split(';') if s.strip()]
+        for stmt in statements:
+            try:
+                self._conn.execute(stmt)
+            except Exception as e:
+                # IGNORE pour IF NOT EXISTS qui repete des declarations
+                if "already exists" not in str(e).lower():
+                    raise
+        return self
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        # libsql n'a pas vraiment de close, c'est OK
+        pass
+
+    @property
+    def total_changes(self):
+        # libsql n'expose pas total_changes, on retourne -1 si pas disponible
+        return getattr(self._conn, 'total_changes', -1)
+
+
+class _TursoRow:
+    """Imite sqlite3.Row : acces par index ou par nom de colonne."""
+    def __init__(self, values, columns):
+        self._values = values
+        self._columns = columns
+        self._map = {col: i for i, col in enumerate(columns)}
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self._values[self._map[key]]
+        return self._values[key]
+
+    def keys(self):
+        return list(self._columns)
+
+
+class _TursoCursor:
+    """Wrapper pour les curseurs libsql, expose rowcount + fetchone + fetchall."""
+
+    def __init__(self, libsql_result):
+        self._result = libsql_result
+        self._columns = None
+        try:
+            # libsql expose les colonnes via .description
+            desc = getattr(libsql_result, 'description', None)
+            if desc:
+                self._columns = [d[0] for d in desc]
+        except Exception:
+            pass
+
+    @property
+    def rowcount(self):
+        return getattr(self._result, 'rowcount', -1)
+
+    @property
+    def lastrowid(self):
+        return getattr(self._result, 'lastrowid', None)
+
+    def fetchone(self):
+        try:
+            row = self._result.fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        if self._columns:
+            return _TursoRow(row, self._columns)
+        return row
+
+    def fetchall(self):
+        try:
+            rows = self._result.fetchall()
+        except Exception:
+            return []
+        if self._columns:
+            return [_TursoRow(r, self._columns) for r in rows]
+        return rows
+
+# =========== END TURSO ADAPTER ===========
+
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,14 +219,22 @@ CREATE INDEX IF NOT EXISTS idx_players_fetched ON players_cache(profile_fetched_
 
 @contextmanager
 def get_conn():
-    """Context manager pour la connexion SQLite."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+    """Context manager pour la connexion DB (Turso si configure, sinon SQLite local)."""
+    if USE_TURSO:
+        conn = _TursoConnWrapper()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
 
 class BetsDB:
@@ -116,7 +244,9 @@ class BetsDB:
         global DB_PATH
         if db_path:
             DB_PATH = Path(db_path)
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Mkdir uniquement en mode SQLite local
+        if not USE_TURSO:
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
     def _init_schema(self):
