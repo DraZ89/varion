@@ -135,7 +135,7 @@ function syncFromVarion() {
     row[COL.ODDS - 1] = bet.odds || "";
     row[COL.BET_RESULT - 1] = "";
     row[COL.SURFACE - 1] = bet.surface || "";
-    row[COL.TIER - 1] = bet.tour || "";
+    row[COL.TIER - 1] = bet.tier || bet.tour || "";
     row[COL.WINNER_OK - 1] = "";  // formules R/S/T se recopient
     row[COL.SCORE_OK - 1] = "";
     row[COL.GAMES_OK - 1] = "";
@@ -161,7 +161,6 @@ function syncFromVarion() {
         const targetRow = startRow + i;
         ["WINNER_OK", "SCORE_OK", "GAMES_OK"].forEach((key, idx) => {
           if (formulas[idx]) {
-            // Remplacer le numéro de ligne dans la formule
             const newFormula = formulas[idx].replace(new RegExp(lastRow, "g"), targetRow);
             sheet.getRange(targetRow, COL[key]).setFormula(newFormula);
           }
@@ -170,7 +169,63 @@ function syncFromVarion() {
     }
   }
 
+  // 6. Coloriage : alternance verte/orange par jour + jaune pour Recommandées
+  // On determine le pattern en regardant les jours dans toute la feuille
+  applyAlternatingColors(sheet);
+
   SpreadsheetApp.getUi().alert(`✅ ${newRows.length} nouveau(x) pari(s) importé(s) depuis Varion.`);
+}
+
+
+/**
+ * Applique l'alternance de couleurs sur toutes les lignes de Raw Data.
+ * - Jour 1 = vert clair 3 (#d9ead3)
+ * - Jour 2 = orange clair 3 (#fce5cd)
+ * - Pari Recommandée = jaune clair 1 (#fff2cc) (override la couleur du jour)
+ */
+function applyAlternatingColors(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  // Lire dates et types
+  const data = sheet.getRange(2, 1, lastRow - 1, COL.TYPE).getValues();
+
+  // Identifier les jours uniques dans l'ordre d'apparition
+  const dayMap = new Map();
+  let dayIndex = 0;
+  data.forEach(row => {
+    const dateVal = row[COL.DATE - 1];
+    const dateKey = dateVal instanceof Date
+      ? dateVal.toISOString().slice(0, 10)
+      : String(dateVal).trim();
+    if (dateKey && !dayMap.has(dateKey)) {
+      dayMap.set(dateKey, dayIndex);
+      dayIndex++;
+    }
+  });
+
+  const COLOR_DAY_A = "#d9ead3";    // vert clair 3
+  const COLOR_DAY_B = "#fce5cd";    // orange clair 3
+  const COLOR_RECO = "#fff2cc";     // jaune clair 1
+
+  // Construire le tableau de couleurs ligne par ligne
+  const colors = data.map(row => {
+    const type = String(row[COL.TYPE - 1] || "").trim();
+    if (type === "Recommandée") {
+      // Toute la ligne en jaune clair
+      return new Array(COL.MATCH_ID).fill(COLOR_RECO);
+    }
+    const dateVal = row[COL.DATE - 1];
+    const dateKey = dateVal instanceof Date
+      ? dateVal.toISOString().slice(0, 10)
+      : String(dateVal).trim();
+    const idx = dayMap.get(dateKey);
+    const color = (idx % 2 === 0) ? COLOR_DAY_A : COLOR_DAY_B;
+    return new Array(COL.MATCH_ID).fill(color);
+  });
+
+  // Appliquer
+  sheet.getRange(2, 1, colors.length, COL.MATCH_ID).setBackgrounds(colors);
 }
 
 
