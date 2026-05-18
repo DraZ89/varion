@@ -646,6 +646,156 @@ window.TennisDetail = function TennisDetail({ match, onBack }) {
             <PlayerEloCard player={pb} color={colorB} isWinnerPredicted={!aWins} />
           </div>
 
+          {/* ENCART CONDITIONS DE JEU (météo) */}
+          {preds.weather && (() => {
+            const w = preds.weather;
+            const archetypes = {
+              big_server: "Grand serveur",
+              defender: "Défenseur",
+              serve_volleyer: "Serveur-volleyeur",
+              baseliner: "Fond de court",
+              unknown: "—",
+            };
+            const fmt = (n, suffix = "") => (n === null || n === undefined) ? "—" : `${Math.round(n)}${suffix}`;
+            const fmtDecimal = (n, suffix = "") => (n === null || n === undefined) ? "—" : `${n.toFixed(1)}${suffix}`;
+
+            return (
+              <div style={{
+                background: "var(--surface-1)",
+                border: "1px solid var(--line)",
+                borderRadius: 12,
+                padding: 20,
+                marginBottom: 16,
+              }}>
+                <div className="flex items-center" style={{ marginBottom: 16, gap: 12 }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 10,
+                    background: "linear-gradient(135deg, #60a5fa, #3b82f6)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    color: "white", fontWeight: 700, fontSize: 18,
+                  }}>🌡️</div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.5, color: "var(--accent-2)" }}>CONDITIONS DE JEU</div>
+                    <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Météo & impact sur les prédictions</div>
+                  </div>
+                </div>
+
+                {/* Stats météo : 4 colonnes */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  gap: 12,
+                  marginBottom: 14,
+                }}>
+                  <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--surface-2)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 4 }}>🌡️ TEMPÉRATURE</div>
+                    <div className="font-data" style={{ fontSize: 18, fontWeight: 700 }}>{fmt(w.temp_c, "°C")}</div>
+                  </div>
+                  <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--surface-2)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 4 }}>💧 HUMIDITÉ</div>
+                    <div className="font-data" style={{ fontSize: 18, fontWeight: 700 }}>{fmt(w.humidity_pct, "%")}</div>
+                  </div>
+                  <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--surface-2)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 4 }}>💨 VENT MAX</div>
+                    <div className="font-data" style={{ fontSize: 18, fontWeight: 700 }}>{fmt(w.wind_max_kmh, " km/h")}</div>
+                  </div>
+                  <div style={{ textAlign: "center", padding: "10px 8px", background: "var(--surface-2)", borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 4 }}>🏔️ ALTITUDE</div>
+                    <div className="font-data" style={{ fontSize: 18, fontWeight: 700 }}>{fmt(w.altitude_m, " m")}</div>
+                  </div>
+                </div>
+
+                {/* Vitesse balle effective */}
+                {w.ball_speed_change_pct !== undefined && w.ball_speed_change_pct !== 0 && (
+                  <div style={{
+                    background: "var(--surface-2)",
+                    borderRadius: 8,
+                    padding: "10px 14px",
+                    marginBottom: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}>
+                    <div style={{ fontSize: 13, color: "var(--ink-2)" }}>⚾ Vitesse balle effective</div>
+                    <div className="font-data" style={{
+                      fontSize: 16,
+                      fontWeight: 700,
+                      color: w.ball_speed_change_pct > 0 ? "var(--success)" : "var(--accent-2)",
+                    }}>
+                      {w.ball_speed_change_pct > 0 ? "+" : ""}{fmtDecimal(w.ball_speed_change_pct, "%")}
+                    </div>
+                  </div>
+                )}
+
+                {/* Impact joueurs */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{
+                    background: "var(--surface-2)",
+                    borderRadius: 8,
+                    padding: 12,
+                    borderLeft: `3px solid ${colorA}`,
+                  }}>
+                    <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 4 }}>
+                      {(pa.name || "").split(" ").pop()} • {archetypes[w.archetype_a] || "—"}
+                    </div>
+                    <div className="font-data" style={{
+                      fontSize: 18,
+                      fontWeight: 700,
+                      color: (w.bonus_a_pct || 0) > 0 ? "var(--success)" : (w.bonus_a_pct || 0) < 0 ? "#ef4444" : "var(--ink-2)",
+                    }}>
+                      {(w.bonus_a_pct || 0) > 0 ? "+" : ""}{fmtDecimal(w.bonus_a_pct, "pp")}
+                    </div>
+                    {w.reasons_a && w.reasons_a.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>
+                        {w.reasons_a.map((r, i) => <div key={i}>• {r}</div>)}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{
+                    background: "var(--surface-2)",
+                    borderRadius: 8,
+                    padding: 12,
+                    borderLeft: `3px solid ${colorB}`,
+                  }}>
+                    <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 4 }}>
+                      {(pb.name || "").split(" ").pop()} • {archetypes[w.archetype_b] || "—"}
+                    </div>
+                    <div className="font-data" style={{
+                      fontSize: 18,
+                      fontWeight: 700,
+                      color: (w.bonus_b_pct || 0) > 0 ? "var(--success)" : (w.bonus_b_pct || 0) < 0 ? "#ef4444" : "var(--ink-2)",
+                    }}>
+                      {(w.bonus_b_pct || 0) > 0 ? "+" : ""}{fmtDecimal(w.bonus_b_pct, "pp")}
+                    </div>
+                    {w.reasons_b && w.reasons_b.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>
+                        {w.reasons_b.map((r, i) => <div key={i}>• {r}</div>)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Conditions extremes ? */}
+                {w.extreme_conditions && (
+                  <div style={{
+                    marginTop: 14,
+                    padding: "10px 14px",
+                    background: "rgba(239, 68, 68, 0.1)",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    borderRadius: 8,
+                  }}>
+                    <div style={{ fontSize: 12, color: "#f87171", fontWeight: 700, marginBottom: 4 }}>
+                      ⚠️ Conditions extrêmes — confiance réduite
+                    </div>
+                    {w.extreme_reasons && w.extreme_reasons.map((r, i) => (
+                      <div key={i} style={{ fontSize: 11, color: "var(--ink-3)" }}>• {r}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* VALUE BETS / PREDICTIONS IA */}
           {valueBets.length > 0 && (() => {
             const isModelOnly = valueBets.every(b => b.type === "model_pick" || b.confidence === "model_only");
