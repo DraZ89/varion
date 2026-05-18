@@ -525,21 +525,24 @@ def _translate_surface_fr(surface_en: str) -> str:
 def _detect_tour_level(match: dict) -> str:
     """Determine le niveau du tournoi : Challenger / ATP 250 / Masters 1000 / Grand Slam / etc.
 
-    1. Cherche dans tournament_type ('Grand Slam', 'Masters 1000', 'ATP 250', 'Challenger', etc.)
-    2. Fallback : detection depuis le nom du tournoi (heuristique mots-cles)
+    1. PRIORITÉ : Heuristique nom du tournoi (Challenger / ITF / Grand Slam)
+       car tournament_type API renvoie parfois "ATP 500" pour des Challengers.
+    2. Fallback : tournament_type de l'API
     3. Fallback final : retourne le tour (ATP/WTA)
     """
-    tt = (match.get("tournament_type") or "").strip()
-    if tt and tt != "Other":
-        return tt  # Valeur API utilisable directement
-    # Heuristique : "Challenger" dans le nom du tournoi
     tname = (match.get("tournament") or "").lower()
+    # Detection prioritaire par nom de tournoi
     if "challenger" in tname:
         return "Challenger"
     if "futures" in tname or "itf" in tname:
         return "ITF"
     if "grand slam" in tname or "australian open" in tname or "roland" in tname or "wimbledon" in tname or "us open" in tname:
         return "Grand Slam"
+    # Sinon, utiliser tournament_type API s'il est utile
+    tt = (match.get("tournament_type") or "").strip()
+    if tt and tt != "Other":
+        return tt
+    # Heuristique fallback : mots-cles
     if "masters" in tname or "1000" in tname:
         return "Masters 1000"
     # Fallback final : ATP / WTA
