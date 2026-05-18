@@ -484,12 +484,36 @@ def main(force: bool = False, test_output: bool = False):
     except Exception as e:
         print(f"  [WARN] Tracking DB : {e}")
 
-    # Ecrire data_tennis.json
+    # Ecrire data_tennis.json sur disque (legacy fallback)
     output_path = os.path.normpath(os.path.join(BACKEND_DIR, "..", "frontend", "data_tennis.json"))
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, default=str, ensure_ascii=False)
 
     size_kb = os.path.getsize(output_path) / 1024
+
+    # Ecrire AUSSI dans Turso DB (persistant à vie, survit aux redeploys)
+    try:
+        from data.bets_db import get_conn, USE_TURSO
+        if USE_TURSO:
+            json_str = json.dumps(output, default=str, ensure_ascii=False)
+            with get_conn() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS kv_store (
+                        key TEXT PRIMARY KEY,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO kv_store (key, data_json, updated_at)
+                    VALUES ('data_tennis', ?, datetime('now'))
+                    ON CONFLICT(key) DO UPDATE SET
+                        data_json = excluded.data_json,
+                        updated_at = excluded.updated_at
+                """, (json_str,))
+            print(f"  data_tennis.json sauve dans Turso DB ({len(json_str)//1024} KB)")
+    except Exception as e:
+        print(f"  [WARN] Sauvegarde Turso : {e}")
 
     # === ENVOI DISCORD (si webhook configure) ===
     try:

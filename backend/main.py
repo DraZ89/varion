@@ -346,8 +346,21 @@ def all_value_bets(min_edge: float = 5.0):
 # =============== TENNIS ENDPOINTS ===============
 
 def _load_tennis_data():
-    """Charge data_tennis.json (genere par jobs/refresh_tennis.py)."""
+    """Charge data_tennis.json depuis Turso DB (persistant) ou filesystem (fallback)."""
     import json
+    # 1. Essayer Turso DB (persistant à vie)
+    try:
+        from data.bets_db import get_conn, USE_TURSO
+        if USE_TURSO:
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT data_json FROM kv_store WHERE key = 'data_tennis' LIMIT 1"
+                ).fetchone()
+                if row and row["data_json"]:
+                    return json.loads(row["data_json"])
+    except Exception as e:
+        print(f"[_load_tennis_data] Turso read failed: {e}, fallback file")
+    # 2. Fallback filesystem
     path = os.path.normpath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "..", "frontend", "data_tennis.json"
@@ -359,6 +372,51 @@ def _load_tennis_data():
             return json.load(f)
     except Exception:
         return None
+
+
+def _save_tennis_data(data: dict) -> bool:
+    """Sauvegarde data_tennis dans Turso DB (persistant) + filesystem (legacy)."""
+    import json
+    json_str = json.dumps(data, ensure_ascii=False)
+
+    # 1. Sauvegarder dans Turso DB
+    try:
+        from data.bets_db import get_conn, USE_TURSO
+        if USE_TURSO:
+            with get_conn() as conn:
+                # Auto-create la table si elle n'existe pas
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS kv_store (
+                        key TEXT PRIMARY KEY,
+                        data_json TEXT NOT NULL,
+                        updated_at TEXT
+                    )
+                """)
+                # UPSERT (INSERT or UPDATE)
+                conn.execute("""
+                    INSERT INTO kv_store (key, data_json, updated_at)
+                    VALUES ('data_tennis', ?, datetime('now'))
+                    ON CONFLICT(key) DO UPDATE SET
+                        data_json = excluded.data_json,
+                        updated_at = excluded.updated_at
+                """, (json_str,))
+            print(f"[_save_tennis_data] OK Turso ({len(json_str)} chars)")
+    except Exception as e:
+        print(f"[_save_tennis_data] Turso write failed: {e}")
+
+    # 2. Sauvegarder aussi sur disque (legacy + fallback)
+    try:
+        path = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "frontend", "data_tennis.json"
+        ))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json_str)
+    except Exception as e:
+        print(f"[_save_tennis_data] File write failed: {e}")
+        return False
+    return True
 
 
 @app.get("/api/tennis/matches")
@@ -430,17 +488,12 @@ def ai_stats():
 @app.get("/api/tennis-data")
 def get_tennis_data():
     """Renvoie le contenu de data_tennis.json (genere par refresh_tennis).
-    Endpoint utile quand le frontend est heberge separement (GitHub Pages, etc.)
+    Lit depuis Turso DB en priorite (persistant), sinon fallback filesystem.
     """
-    import json as _json
-    data_path = os.path.join(FRONTEND_DIR, "data_tennis.json")
-    if not os.path.exists(data_path):
+    data = _load_tennis_data()
+    if not data:
         return {"matches": [], "generated_at": None, "error": "Pas encore de donnees. Lancez /api/admin/refresh-tennis"}
-    try:
-        with open(data_path, "r", encoding="utf-8") as f:
-            return _json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return data
 
 
 @app.get("/api/football-data")
@@ -574,15 +627,9 @@ def sheets_get_pending_bets(authorization: Optional[str] = Header(None)):
     ]
     """
     _check_sheets_auth(authorization)
-    import json as _json
-    data_path = os.path.join(FRONTEND_DIR, "data_tennis.json")
-    if not os.path.exists(data_path):
+    data = _load_tennis_data()
+    if not data:
         return []
-    try:
-        with open(data_path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
     output = []
     for m in data.get("matches", []):
