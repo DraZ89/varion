@@ -786,6 +786,189 @@ def sheets_submit_results(payload: dict, authorization: Optional[str] = Header(N
     return {"updated": updated, "errors": errors, "total_received": len(results)}
 
 
+@app.post("/api/sheets/bulk-import-history")
+def sheets_bulk_import_history(payload: dict, authorization: Optional[str] = Header(None)):
+    """Importe en lot tout l'historique des paris depuis le Sheet.
+
+    Pour chaque pari :
+      - Si pas en DB : creation avec status='pending'
+      - Si resultat fourni : resolution immediate
+
+    Payload :
+    {
+      "principales": [
+        {
+          "match_id": "T_1682",
+          "date": "2026-05-14",
+          "tournament": "Wuxi Challenger",
+          "surface": "Hard",
+          "tour": "ATP",
+          "tier": "Challenger",
+          "player_a": "Player A",
+          "player_b": "Player B",
+          "predicted_winner": "Player A",
+          "real_winner": "Player A",        // optionnel
+          "predicted_games": 22.5,
+          "real_games": 19,                 // optionnel
+        }, ...
+      ],
+      "recommandes": [
+        {
+          "match_id": "T_1682",
+          "date": "...", "tournament": "...", "surface": "...",
+          "tour": "...", "tier": "...",
+          "player_a": "...", "player_b": "...",
+          "bet_label": "Victoire Player A",
+          "odds": 1.85,
+          "result": "Gagné",                // ou "Perdu" ou vide
+        }, ...
+      ]
+    }
+    """
+    _check_sheets_auth(authorization)
+    principales = payload.get("principales") or []
+    recommandes = payload.get("recommandes") or []
+
+    from data.bets_db import get_conn
+
+    inserted_p = inserted_r = resolved_p = resolved_r = 0
+    errors = []
+
+    print(f"[Sheets] Bulk-import : {len(principales)} principales + {len(recommandes)} recommandes")
+
+    with get_conn() as conn:
+        # === PRINCIPALES ===
+        for p in principales:
+            match_id = p.get("match_id", "")
+            if not match_id:
+                continue
+
+            try:
+                # Vérifier si déjà en DB
+                existing = conn.execute(
+                    "SELECT id, status FROM bets WHERE match_id = ? AND bet_type IN ('value_bet','model_pick','model_pick_no_odds') LIMIT 1",
+                    (match_id,)
+                ).fetchone()
+
+                pred_winner = p.get("predicted_winner", "")
+                real_winner = p.get("real_winner", "")
+
+                if not existing:
+                    # Insert nouveau pari Principale (= model_pick sur le vainqueur)
+                    market_key = "1"  # par convention, on stocke comme victoire joueur A
+                    conn.execute("""
+                        INSERT INTO bets (
+                            match_id, sport, tour, tournament, surface,
+                            match_date, player_a_name, player_b_name,
+                            market, market_key, selection,
+                            odds, edge_pct, model_prob, implied_prob, confidence, bet_type, status
+                        ) VALUES (?, 'tennis', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 'model_only', 'model_pick_no_odds', 'pending')
+                    """, (
+                        match_id,
+                        p.get("tour", ""),
+                        p.get("tournament", ""),
+                        p.get("surface", ""),
+                        p.get("date", ""),
+                        p.get("player_a", ""),
+                        p.get("player_b", ""),
+                        f"Victoire {pred_winner}",
+                        market_key,
+                        pred_winner,
+                    ))
+                    inserted_p += 1
+
+                # Si resultat fourni : resoudre
+                if real_winner:
+                    selection_q = conn.execute(
+                        "SELECT id, selection, odds FROM bets WHERE match_id = ? AND bet_type IN ('value_bet','model_pick','model_pick_no_odds') AND status='pending' LIMIT 1",
+                        (match_id,)
+                    ).fetchone()
+                    if selection_q:
+                        selection = (selection_q["selection"] or "").strip().lower()
+                        rw = real_winner.strip().lower()
+                        if rw in selection or selection in rw:
+                            status = "won"
+                        else:
+                            status = "lost"
+                        odds_val = float(selection_q["odds"] or 0)
+                        profit = (odds_val - 1) if status == "won" else -1
+                        conn.execute(
+                            "UPDATE bets SET status=?, settled_at=datetime('now'), profit_units=? WHERE id=?",
+                            (status, profit, selection_q["id"])
+                        )
+                        resolved_p += 1
+            except Exception as e:
+                print(f"  [Error Princ] {match_id} : {e}")
+                errors.append(f"Princ {match_id}: {e}")
+
+        # === RECOMMANDES ===
+        for r in recommandes:
+            match_id = r.get("match_id", "")
+            if not match_id:
+                continue
+
+            try:
+                bet_label = r.get("bet_label", "")
+                # Vérifier si déjà en DB (par market = bet_label pour distinguer plusieurs reco par match)
+                existing = conn.execute(
+                    "SELECT id, status FROM bets WHERE match_id = ? AND market = ? LIMIT 1",
+                    (match_id, bet_label)
+                ).fetchone()
+
+                odds_val = 0
+                try:
+                    odds_val = float(r.get("odds") or 0)
+                except Exception:
+                    odds_val = 0
+
+                if not existing:
+                    conn.execute("""
+                        INSERT INTO bets (
+                            match_id, sport, tour, tournament, surface,
+                            match_date, player_a_name, player_b_name,
+                            market, market_key, selection,
+                            odds, edge_pct, model_prob, implied_prob, confidence, bet_type, status
+                        ) VALUES (?, 'tennis', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, 0, 0, 0, 'medium', 'value_bet', 'pending')
+                    """, (
+                        match_id,
+                        r.get("tour", ""),
+                        r.get("tournament", ""),
+                        r.get("surface", ""),
+                        r.get("date", ""),
+                        r.get("player_a", ""),
+                        r.get("player_b", ""),
+                        bet_label,
+                        bet_label,  # selection = même que market pour simplifier
+                        odds_val,
+                    ))
+                    inserted_r += 1
+
+                # Résoudre si résultat dispo
+                result = (r.get("result") or "").lower()
+                if result in ("gagné", "gagne", "won", "win", "perdu", "lost", "loss"):
+                    status = "won" if result in ("gagné", "gagne", "won", "win") else "lost"
+                    profit = (odds_val - 1) if status == "won" else -1
+                    cur = conn.execute(
+                        "UPDATE bets SET status=?, settled_at=datetime('now'), profit_units=? WHERE match_id=? AND market=? AND status='pending'",
+                        (status, profit, match_id, bet_label)
+                    )
+                    if cur.rowcount > 0:
+                        resolved_r += 1
+            except Exception as e:
+                print(f"  [Error Reco] {match_id} : {e}")
+                errors.append(f"Reco {match_id}: {e}")
+
+    print(f"[Sheets] Bulk-import : {inserted_p} principales inserees, {resolved_p} resolues / {inserted_r} reco inserees, {resolved_r} resolues")
+
+    return {
+        "principales_inserted": inserted_p,
+        "principales_resolved": resolved_p,
+        "recommandes_inserted": inserted_r,
+        "recommandes_resolved": resolved_r,
+        "errors": errors[:20],  # cap pour eviter response trop grosse
+    }
+
+
 # =============== END GOOGLE SHEETS SYNC ===============
 
 
