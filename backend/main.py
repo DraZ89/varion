@@ -545,6 +545,42 @@ def admin_resolve_bets(authorization: Optional[str] = Header(None)):
     return resolve_pending_bets(authorization)
 
 
+@app.post("/api/admin/reset-bets")
+def admin_reset_bets(authorization: Optional[str] = Header(None)):
+    """Efface tous les paris en DB.
+    Utile pour repartir de zero apres un bug ou pour re-synchroniser depuis le Sheet.
+
+    ATTENTION : action irreversible. Tous les paris (pending, won, lost) sont supprimes.
+    Les caches de profils joueurs sont preserves.
+    """
+    _check_admin_auth(authorization)
+    return _reset_all_bets()
+
+
+@app.post("/api/sheets/reset-bets")
+def sheets_reset_bets(authorization: Optional[str] = Header(None)):
+    """Alias pour Apps Script (authentification via SHEETS_TOKEN).
+    Meme effet que /api/admin/reset-bets : efface tous les paris.
+    """
+    _check_sheets_auth(authorization)
+    return _reset_all_bets()
+
+
+def _reset_all_bets() -> dict:
+    """Helper : efface tous les paris de la DB."""
+    from data.bets_db import get_conn
+    deleted = 0
+    try:
+        with get_conn() as conn:
+            cur = conn.execute("DELETE FROM bets")
+            deleted = cur.rowcount or 0
+        print(f"[Admin] reset-bets : {deleted} paris supprimes")
+        return {"status": "ok", "deleted": deleted}
+    except Exception as e:
+        print(f"[Admin] reset-bets error : {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============== GOOGLE SHEETS SYNC ENDPOINTS ===============
 
 def _check_sheets_auth(authorization: str):

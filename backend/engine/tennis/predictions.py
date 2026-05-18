@@ -42,6 +42,8 @@ def predict_match_winner(player_a: dict, player_b: dict, surface: str,
         'elo': {'global': 2050, 'hard': 2080, 'clay': 1950, 'grass': 2020},
         'recent_results': [True, True, False, True, ...],
         'h2h_wins_vs_opponent': 3,  # vs l'autre joueur
+        'current_rank': 155,
+        'recent_opponents': [{'opponent_rank': 22, 'won': True}, ...],  # 5 derniers
         ...
     }
     """
@@ -58,11 +60,23 @@ def predict_match_winner(player_a: dict, player_b: dict, surface: str,
         player_b.get("h2h_wins_vs_opponent", 0),
     )
 
+    # === NOUVEAU : Ajustement ranking ATP ===
+    ranking_adj = ranking_gap_factor(
+        player_a.get("current_rank") or 999,
+        player_b.get("current_rank") or 999,
+    )
+
+    # === NOUVEAU : Qualite des adversaires recents ===
+    opp_quality_a = recent_opponents_quality_factor(player_a)
+    opp_quality_b = recent_opponents_quality_factor(player_b)
+    opp_quality_adj = opp_quality_a / opp_quality_b
+
     # Application des ajustements
     adjusted_prob_a = elo_pred["prob_a"] / 100
-    adjusted_prob_a = adjusted_prob_a * form_adjustment * hf
+    adjusted_prob_a = adjusted_prob_a * form_adjustment * hf * ranking_adj * opp_quality_adj
     adjusted_prob_a = max(0.05, min(0.95, adjusted_prob_a))
 
+    # Renormaliser
     return {
         "prob_a": round(adjusted_prob_a * 100, 2),
         "prob_b": round((1 - adjusted_prob_a) * 100, 2),
@@ -72,8 +86,89 @@ def predict_match_winner(player_a: dict, player_b: dict, surface: str,
         "surface": elo_pred["surface"],
         "form_adjustment": round(form_adjustment, 3),
         "h2h_factor": round(hf, 3),
+        "ranking_adjustment": round(ranking_adj, 3),
+        "opp_quality_a": round(opp_quality_a, 3),
+        "opp_quality_b": round(opp_quality_b, 3),
         "raw_elo_prob_a": elo_pred["prob_a"],
     }
+
+
+def ranking_gap_factor(rank_a: int, rank_b: int) -> float:
+    """Facteur d'ajustement base sur la difference de ranking ATP.
+
+    Ranking faible = meilleur (1 = top mondial).
+    Si rank_a=155, rank_b=536 → grosse difference → favorise A.
+
+    Retourne facteur multiplicatif :
+    - > 1.0 = boost pour A
+    - < 1.0 = malus pour A (B est mieux classe)
+    """
+    if not rank_a or not rank_b:
+        return 1.0
+
+    # Gap en faveur de A si rank_a < rank_b (A est mieux classe)
+    gap = rank_b - rank_a
+
+    # Utiliser log pour eviter sur-pondération sur gros gaps
+    import math
+    if gap > 0:
+        # A est mieux classe : boost progressif
+        # Gap 50 → +5%, gap 200 → +12%, gap 500 → +18%
+        boost = math.log10(1 + gap / 30) * 0.18
+        return 1.0 + min(0.25, boost)
+    elif gap < 0:
+        # A est moins bien classe : malus
+        malus = math.log10(1 + abs(gap) / 30) * 0.18
+        return 1.0 / (1.0 + min(0.25, malus))
+    return 1.0
+
+
+def recent_opponents_quality_factor(player: dict) -> float:
+    """Facteur base sur la qualite des 5 derniers adversaires.
+
+    Si un joueur a affronte des gros noms recemment ET les a battus,
+    son niveau reel est sous-estime par son ELO actuel.
+
+    player['recent_opponents'] : liste de dicts {'opponent_rank': int, 'won': bool}
+
+    Retourne :
+    - > 1.0 si bonne qualite (vs gros noms, victoires inclues)
+    - < 1.0 si faible qualite (vs petits noms, ou defaites systematiques)
+    - 1.0 si donnees absentes (neutre)
+    """
+    opps = player.get("recent_opponents") or []
+    if not opps:
+        return 1.0
+
+    # Calcul score qualite
+    import math
+    quality_score = 0.0
+    n = 0
+    for opp in opps[:5]:  # max 5 derniers
+        rank = opp.get("opponent_rank") or 999
+        won = opp.get("won", False)
+
+        # Niveau adversaire (rank bas = bon)
+        # rank 10 → 10pts, rank 50 → 6pts, rank 100 → 4pts, rank 500 → 1pt
+        opp_level = max(1, 10 - math.log10(rank + 1) * 3)
+
+        # Bonus enorme si victoire vs top 50
+        if won:
+            quality_score += opp_level * 1.5  # gain de battre un classe = bonus 50%
+        else:
+            # Defaite vs un top 50 = pas si grave
+            # Defaite vs un classe 500 = mauvais signe
+            quality_score += opp_level * 0.5
+
+        n += 1
+
+    if n == 0:
+        return 1.0
+
+    avg = quality_score / n
+    # Normaliser : avg=5 (joueur moyen) → 1.0, avg=12 (vs top) → 1.15, avg=2 → 0.90
+    factor = 1.0 + (avg - 5) * 0.03
+    return max(0.85, min(1.20, factor))
 
 
 def serve_win_probability(player: dict, surface: str) -> float:
@@ -229,15 +324,20 @@ def predict_sets_score(player_a: dict, player_b: dict, surface: str,
 
 def predict_match(player_a: dict, player_b: dict, surface: str,
                   tournament_type: str = "ATP 250",
-                  max_sets: int = BO3_MAX_SETS) -> dict:
+                  max_sets: int = BO3_MAX_SETS,
+                  weather: dict = None) -> dict:
     """
     Prédiction complète multi-marchés pour un match de tennis.
+
+    Args:
+        weather: dict optionnel meteo {temp_mean_c, humidity_pct, altitude_m, ...}
+                 Si fourni, applique un ajustement physique + archetype joueur.
     """
     winner = predict_match_winner(player_a, player_b, surface, tournament_type)
     sets = predict_sets_score(player_a, player_b, surface, max_sets)
     games = predict_total_games(player_a, player_b, surface, 22.5, max_sets)
 
-    return {
+    result = {
         "winner": winner,
         "sets_score": sets,
         "total_games": games,
@@ -245,6 +345,37 @@ def predict_match(player_a: dict, player_b: dict, surface: str,
         "surface": surface,
         "format": f"BO{max_sets}",
     }
+
+    # === AJUSTEMENT METEO ===
+    if weather:
+        try:
+            from .weather_modifier import apply_weather_to_prediction
+            raw = {
+                "player_a_prob": (winner.get("a_pct", 50) or 50) / 100.0,
+                "player_b_prob": (winner.get("b_pct", 50) or 50) / 100.0,
+                "confidence": winner.get("confidence", 0.7),
+            }
+            adjusted = apply_weather_to_prediction(
+                raw, player_a, player_b, surface, weather
+            )
+            if adjusted.get("weather_applied"):
+                # Mettre a jour les probas (en gardant les noms originaux du dict winner)
+                new_a_pct = round(adjusted["player_a_prob"] * 100, 1)
+                new_b_pct = round(adjusted["player_b_prob"] * 100, 1)
+                # Stocker les valeurs raw pour transparence
+                winner["a_pct_raw"] = winner.get("a_pct")
+                winner["b_pct_raw"] = winner.get("b_pct")
+                winner["a_pct"] = new_a_pct
+                winner["b_pct"] = new_b_pct
+                winner["confidence"] = adjusted["confidence"]
+                # Recalculer le 'predicted' winner
+                winner["predicted"] = player_a.get("name") if new_a_pct >= new_b_pct else player_b.get("name")
+                # Ajouter les details meteo
+                result["weather"] = adjusted["weather_details"]
+        except Exception as e:
+            print(f"[predict_match] weather adjustment error: {e}")
+
+    return result
 
 
 # ============== HELPERS ==============

@@ -242,9 +242,14 @@ def main(force: bool = False, test_output: bool = False):
                 # Past matches (forme recente)
                 past = api.get_player_past_matches(tour, pid)
                 if past:
+                    # Construire un dict de rankings pour resoudre les opponent_rank
+                    rankings_dict = {p.get("api_id"): p.get("rank", 999) for p in top_players.values() if p.get("api_id")}
                     top_players[pid] = tennis_mapper.enrich_player_with_recent_results(
-                        top_players[pid], past
+                        top_players[pid], past, rankings_dict=rankings_dict
                     )
+
+                # Alias 'current_rank' pour le moteur de prediction
+                top_players[pid]["current_rank"] = top_players[pid].get("rank") or 999
 
                 # === Profile bio : cache persistant DB (TTL 365j) ===
                 api_id_int = top_players[pid].get("api_id")
@@ -356,12 +361,28 @@ def main(force: bool = False, test_output: bool = False):
                 p_a["h2h_wins_vs_opponent"] = h2h_data["wins_a"]
                 p_b["h2h_wins_vs_opponent"] = h2h_data["wins_b"]
 
-                # Predictions
+                # === FETCH METEO ===
+                weather_data = None
+                try:
+                    from providers.weather import get_match_weather
+                    weather_data = get_match_weather(
+                        mapped_match.get("tournament", ""),
+                        mapped_match.get("date", ""),
+                    )
+                    if weather_data:
+                        print(f"    Meteo : {weather_data.get('temp_mean_c'):.0f}°C, "
+                              f"{weather_data.get('humidity_pct'):.0f}%hum, "
+                              f"{weather_data.get('altitude_m')}m alt")
+                except Exception as e:
+                    print(f"    [WARN] Meteo non recuperee : {e}")
+
+                # Predictions (avec ajustement meteo si dispo)
                 preds = predict_match(
                     p_a, p_b,
                     mapped_match["surface"],
                     mapped_match["tournament_type"],
                     max_sets=mapped_match["max_sets"],
+                    weather=weather_data,
                 )
 
                 # === COTES : The Odds API en priorite 1 ===

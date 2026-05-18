@@ -268,7 +268,10 @@ class BetsDB:
     # ========== AJOUT DE PARIS ==========
 
     def add_bet(self, match: dict, bet: dict, player_a_id=None, player_b_id=None) -> bool:
-        """Ajoute un pari propose par l'IA. Retourne True si insere, False si deja present.
+        """Ajoute un pari propose par l'IA. Retourne True si insere, False si echec.
+
+        Si un pari pending existe deja pour ce match, il est SUPPRIME et remplace
+        (evite les contradictions quand l'IA change d'avis entre 2 refresh).
 
         match : dict du match (avec id, tour, tournament, surface, etc.)
         bet : dict du value bet (market, odds, edge_pct, model_prob, ...)
@@ -280,9 +283,21 @@ class BetsDB:
         elif bet.get("market_key") == "2":
             selection_id = player_b_id
 
+        match_id = match.get("id", "")
+        if not match_id:
+            return False
+
         try:
             with get_conn() as conn:
-                conn.execute("""
+                # ETAPE 1 : Supprimer les anciens paris pending pour ce match
+                # (evite les contradictions/doublons quand l'IA change d'avis)
+                conn.execute(
+                    "DELETE FROM bets WHERE match_id = ? AND status = 'pending'",
+                    (match_id,)
+                )
+
+                # ETAPE 2 : Inserer le nouveau pari
+                cur = conn.execute("""
                     INSERT OR IGNORE INTO bets (
                         match_id, api_match_id, sport, tour, tournament, surface,
                         match_date, match_timestamp_ms,
@@ -291,7 +306,7 @@ class BetsDB:
                         odds, edge_pct, model_prob, implied_prob, confidence, bet_type
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    match.get("id", ""),
+                    match_id,
                     match.get("api_id"),
                     match.get("sport", "tennis"),
                     match.get("tour", ""),
@@ -312,12 +327,10 @@ class BetsDB:
                     bet.get("model_prob", 0),
                     bet.get("implied_prob", 0),
                     bet.get("confidence", "medium"),
-                    # bet_type : value_bet / model_pick / model_pick_no_odds
-                    # → model_pick_no_odds = pari trackable pour fiabilite mais pas pour ROI
                     ("model_pick_no_odds" if bet.get("no_real_odds")
                      else bet.get("type", "value_bet")),
                 ))
-                return conn.total_changes > 0
+                return cur.rowcount > 0
         except Exception as e:
             print(f"[BetsDB] Erreur add_bet : {e}")
             return False
@@ -421,7 +434,10 @@ class BetsDB:
     # ========== STATS ==========
 
     def get_global_stats(self) -> dict:
-        """Retourne les stats globales : win rate, ROI, etc."""
+        """Retourne les stats globales : win rate, ROI, etc.
+        Filtre sur les paris Recommandes uniquement (value_bet, model_pick, model_pick_no_odds),
+        car les paris Principaux (vainqueur match) ne sont pas des paris a valeur trackable.
+        """
         with get_conn() as conn:
             row = conn.execute("""
                 SELECT
@@ -435,6 +451,7 @@ class BetsDB:
                     SUM(CASE WHEN status IN ('won','lost') THEN profit_units ELSE 0 END) AS profit_units,
                     SUM(CASE WHEN status IN ('won','lost') THEN 1 ELSE 0 END) AS settled
                 FROM bets
+                WHERE bet_type IN ('value_bet', 'model_pick', 'model_pick_no_odds')
             """).fetchone()
 
             if not row or row["total"] == 0:
@@ -474,10 +491,24 @@ class BetsDB:
         if group_by not in ("surface", "tour", "confidence", "sport", "bet_type"):
             return []
 
+        # Pour les surfaces : normaliser (Hard/Dur, Clay/Terre Battue, Grass/Gazon)
+        if group_by == "surface":
+            group_expr = """
+                CASE
+                    WHEN LOWER(surface) IN ('hard','dur','dur (indoor)','indoor hard','hardcourt') THEN 'Hard'
+                    WHEN LOWER(surface) IN ('clay','terre battue','terre','red clay') THEN 'Clay'
+                    WHEN LOWER(surface) IN ('grass','gazon') THEN 'Grass'
+                    WHEN LOWER(surface) IN ('carpet','moquette') THEN 'Carpet'
+                    ELSE surface
+                END
+            """
+        else:
+            group_expr = group_by
+
         with get_conn() as conn:
             rows = conn.execute(f"""
                 SELECT
-                    {group_by} AS group_value,
+                    {group_expr} AS group_value,
                     COUNT(*) AS total,
                     SUM(CASE WHEN status='won' THEN 1 ELSE 0 END) AS won,
                     SUM(CASE WHEN status='lost' THEN 1 ELSE 0 END) AS lost,
@@ -485,7 +516,7 @@ class BetsDB:
                     SUM(CASE WHEN status IN ('won','lost') THEN 1 ELSE 0 END) AS settled
                 FROM bets
                 WHERE {group_by} IS NOT NULL AND {group_by} != ''
-                GROUP BY {group_by}
+                GROUP BY {group_expr}
                 ORDER BY total DESC
             """).fetchall()
 

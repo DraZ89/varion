@@ -220,11 +220,16 @@ def enrich_player_with_surface_data(player: dict, surface_summary: list) -> dict
     return player
 
 
-def enrich_player_with_recent_results(player: dict, past_matches: list) -> dict:
+def enrich_player_with_recent_results(player: dict, past_matches: list, rankings_dict: dict = None) -> dict:
     """Met a jour la forme recente (5 derniers matchs).
-    Format : liste d'objets [{result: 'W'/'L', date, opponent, score}, ...]
+    Format : liste d'objets [{result: 'W'/'L', date, opponent, opponent_rank, score, won}, ...]
+
+    Args:
+        rankings_dict: dict {api_id: rank} pour resolver le rank des adversaires.
+                       Si None ou adversaire absent, opponent_rank = 999.
     """
     pid = player["api_id"]
+    rankings_dict = rankings_dict or {}
 
     sorted_matches = sorted(past_matches, key=lambda m: m.get("date") or "", reverse=True)
 
@@ -248,21 +253,33 @@ def enrich_player_with_recent_results(player: dict, past_matches: list) -> dict:
 
         if p1_id == pid:
             opponent = p2_name
+            opp_id = p2_id
         else:
             opponent = p1_name
+            opp_id = p1_id
+
+        # Ranking adversaire depuis le dict de rankings (top 300 typiquement)
+        opp_rank = rankings_dict.get(opp_id, 999)
 
         # Score
         score = m.get("result") or m.get("score") or ""
 
         results.append({
             "result": "W" if won else "L",
-            "won": won,  # garde le booleen pour compat
+            "won": won,
             "date": date_short,
             "opponent": opponent,
+            "opponent_id": opp_id,
+            "opponent_rank": opp_rank,
             "score": score,
         })
 
     player["recent_results"] = results
+    # Alias 'recent_opponents' pour le moteur de prediction
+    player["recent_opponents"] = [
+        {"opponent_rank": r["opponent_rank"], "won": r["won"]}
+        for r in results
+    ]
     return player
 
 
