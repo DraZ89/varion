@@ -727,6 +727,28 @@ window.TennisDetail = function TennisDetail({ match, onBack }) {
                   </div>
                 )}
 
+                {/* Court Pace Index (CPI) */}
+                {w.cpi !== undefined && (
+                  <div style={{
+                    background: "var(--surface-2)",
+                    borderRadius: 8,
+                    padding: "10px 14px",
+                    marginBottom: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}>
+                    <div style={{ fontSize: 13, color: "var(--ink-2)" }}>🏟️ Vitesse du court (CPI)</div>
+                    <div className="font-data" style={{
+                      fontSize: 14,
+                      fontWeight: 700,
+                      color: w.cpi >= 40 ? "#f87171" : w.cpi < 25 ? "#60a5fa" : "var(--ink-2)",
+                    }}>
+                      {w.cpi} · {w.cpi_label || "—"}
+                    </div>
+                  </div>
+                )}
+
                 {/* Impact joueurs */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <div style={{

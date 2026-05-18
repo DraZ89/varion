@@ -383,6 +383,7 @@ def main(force: bool = False, test_output: bool = False):
                     mapped_match["tournament_type"],
                     max_sets=mapped_match["max_sets"],
                     weather=weather_data,
+                    tournament_name=mapped_match.get("tournament", ""),
                 )
 
                 # === COTES : The Odds API en priorite 1 ===

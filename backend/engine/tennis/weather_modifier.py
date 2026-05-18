@@ -171,7 +171,57 @@ def apply_player_weather_bonus(archetype: str, surface: str, weather: dict) -> d
     return {"bonus_pct": round(bonus, 2), "reasons": reasons}
 
 
-# ============== 4. CONDITIONS EXTREMES (reduction confiance) ==============
+# ============== 3bis. COURT PACE INDEX (vitesse de surface) ==============
+
+def apply_pace_factor(archetype: str, cpi_data) -> dict:
+    """Applique un bonus/malus base sur le Court Pace Index (CPI) du court.
+
+    Toutes les surfaces "Hard" ne sont pas egales :
+    - Indian Wells CPI 26 (slow) → favorise rallyeurs
+    - Cincinnati CPI 39 (fast) → favorise serveurs
+
+    Args:
+        archetype : 'big_server' | 'defender' | 'serve_volleyer' | 'baseliner'
+        cpi_data : tuple (cpi_int, category_str) ou None
+
+    Returns: dict {bonus_pct, reason} ou {bonus_pct: 0} si pas de CPI
+    """
+    if not cpi_data:
+        return {"bonus_pct": 0.0, "reason": None}
+
+    cpi, category = cpi_data
+
+    # Mapping archetype × pace
+    if archetype == "big_server":
+        if cpi >= 40:
+            return {"bonus_pct": 2.5, "reason": f"+2.5pp court rapide (CPI {cpi}) favorise gros service"}
+        if cpi >= 35:
+            return {"bonus_pct": 1.5, "reason": f"+1.5pp court moyennement rapide (CPI {cpi})"}
+        if cpi < 25:
+            return {"bonus_pct": -2.5, "reason": f"-2.5pp court tres lent (CPI {cpi}) defavorise serveurs"}
+        if cpi < 30:
+            return {"bonus_pct": -1.5, "reason": f"-1.5pp court lent (CPI {cpi})"}
+
+    elif archetype == "defender":
+        if cpi < 25:
+            return {"bonus_pct": 2.5, "reason": f"+2.5pp court tres lent (CPI {cpi}) favorise rallyes longs"}
+        if cpi < 30:
+            return {"bonus_pct": 1.5, "reason": f"+1.5pp court lent (CPI {cpi}) avantage defenseur"}
+        if cpi >= 45:
+            return {"bonus_pct": -2.0, "reason": f"-2.0pp court tres rapide (CPI {cpi}) reduit le temps de reaction"}
+        if cpi >= 40:
+            return {"bonus_pct": -1.0, "reason": f"-1.0pp court rapide (CPI {cpi})"}
+
+    elif archetype == "serve_volleyer":
+        if cpi >= 40:
+            return {"bonus_pct": 2.0, "reason": f"+2.0pp court rapide (CPI {cpi}) favorise montee au filet"}
+        if cpi < 25:
+            return {"bonus_pct": -2.5, "reason": f"-2.5pp court tres lent (CPI {cpi}) tue le serveur-volleyeur"}
+
+    return {"bonus_pct": 0.0, "reason": None}
+
+
+
 
 def detect_extreme_conditions(weather: dict, surface: str = None) -> dict:
     """Detecte des conditions extremes qui rendent les predictions moins fiables.
@@ -219,22 +269,18 @@ def apply_weather_to_prediction(
     player_b_data: dict,
     surface: str,
     weather: dict,
+    tournament_name: str = None,
 ) -> dict:
-    """Applique l'ajustement meteo aux probabilites brutes de victoire.
+    """Applique l'ajustement meteo + CPI aux probabilites brutes de victoire.
 
     Args:
         raw_probabilities: {"player_a_prob": 0.6, "player_b_prob": 0.4, "confidence": 0.7}
         player_a_data, player_b_data : dicts des joueurs avec profile
         surface : nom de la surface
         weather : dict meteo (ou None)
+        tournament_name : nom du tournoi (pour resolver CPI)
 
-    Returns: dict {
-        "player_a_prob": float ajuste,
-        "player_b_prob": float ajuste,
-        "confidence": float ajuste,
-        "weather_applied": bool,
-        "weather_details": { ... infos pour transparence ... }
-    }
+    Returns: dict avec proba ajustees + details weather + cpi
     """
     pa_prob = float(raw_probabilities.get("player_a_prob", 0.5))
     pb_prob = float(raw_probabilities.get("player_b_prob", 1.0 - pa_prob))
@@ -253,9 +299,25 @@ def apply_weather_to_prediction(
     arch_a = detect_archetype(player_a_data)
     arch_b = detect_archetype(player_b_data)
 
-    # Bonus/malus pour chaque joueur
+    # Bonus/malus pour chaque joueur (meteo)
     bonus_a = apply_player_weather_bonus(arch_a, surface, weather)
     bonus_b = apply_player_weather_bonus(arch_b, surface, weather)
+
+    # === CPI : Court Pace Index ===
+    cpi_data = None
+    pace_a = {"bonus_pct": 0.0, "reason": None}
+    pace_b = {"bonus_pct": 0.0, "reason": None}
+    try:
+        from providers.surface_pace import get_cpi, get_cpi_for_surface, get_cpi_label
+        cpi_data = get_cpi(tournament_name) if tournament_name else None
+        # Fallback : utiliser le CPI moyen de la surface
+        if not cpi_data:
+            cpi_data = get_cpi_for_surface(surface)
+        if cpi_data:
+            pace_a = apply_pace_factor(arch_a, cpi_data)
+            pace_b = apply_pace_factor(arch_b, cpi_data)
+    except Exception as e:
+        print(f"[apply_weather] CPI fetch error: {e}")
 
     # Conditions extremes
     extreme = detect_extreme_conditions(weather, surface)
@@ -267,10 +329,12 @@ def apply_weather_to_prediction(
         weather.get("humidity_pct"),
     )
 
-    # Application : bonus en POURCENTAGE POINTS sur la proba
-    # bonus_a = +3 → pa_prob passe de 0.60 a 0.63
-    new_pa = pa_prob + (bonus_a["bonus_pct"] / 100.0)
-    new_pb = pb_prob + (bonus_b["bonus_pct"] / 100.0)
+    # Application : bonus meteo + bonus pace (en POURCENTAGE POINTS sur la proba)
+    total_bonus_a = bonus_a["bonus_pct"] + pace_a["bonus_pct"]
+    total_bonus_b = bonus_b["bonus_pct"] + pace_b["bonus_pct"]
+
+    new_pa = pa_prob + (total_bonus_a / 100.0)
+    new_pb = pb_prob + (total_bonus_b / 100.0)
 
     # Renormaliser pour que somme = 1
     total = new_pa + new_pb
@@ -278,41 +342,60 @@ def apply_weather_to_prediction(
         new_pa = new_pa / total
         new_pb = new_pb / total
 
-    # Clamp [0.05, 0.95] pour rester realiste
+    # Clamp [0.05, 0.95]
     new_pa = max(0.05, min(0.95, new_pa))
     new_pb = max(0.05, min(0.95, new_pb))
-
-    # Renormaliser apres clamp
     total = new_pa + new_pb
     new_pa = new_pa / total
     new_pb = new_pb / total
 
-    # Ajuster confiance : reduire si conditions extremes
+    # Ajuster confiance
     new_conf = confidence * (1.0 - extreme["confidence_penalty_pct"] / 100.0)
     new_conf = max(0.1, min(1.0, new_conf))
+
+    # Fusionner les raisons (meteo + pace)
+    all_reasons_a = list(bonus_a["reasons"])
+    if pace_a["reason"]:
+        all_reasons_a.append(pace_a["reason"])
+    all_reasons_b = list(bonus_b["reasons"])
+    if pace_b["reason"]:
+        all_reasons_b.append(pace_b["reason"])
+
+    weather_details = {
+        "archetype_a": arch_a,
+        "archetype_b": arch_b,
+        "bonus_a_pct": round(total_bonus_a, 2),
+        "bonus_b_pct": round(total_bonus_b, 2),
+        "reasons_a": all_reasons_a,
+        "reasons_b": all_reasons_b,
+        "extreme_conditions": extreme["is_extreme"],
+        "confidence_penalty_pct": extreme["confidence_penalty_pct"],
+        "extreme_reasons": extreme["reasons"],
+        "ball_speed_change_pct": speed["speed_change_pct"],
+        "temp_c": weather.get("temp_mean_c"),
+        "humidity_pct": weather.get("humidity_pct"),
+        "altitude_m": weather.get("altitude_m"),
+        "wind_max_kmh": weather.get("wind_max_kmh"),
+        "precipitation_mm": weather.get("precipitation_mm"),
+    }
+
+    # Ajouter CPI dans details si dispo
+    if cpi_data:
+        try:
+            from providers.surface_pace import get_cpi_label
+            cpi_val, cpi_cat = cpi_data
+            weather_details["cpi"] = cpi_val
+            weather_details["cpi_category"] = cpi_cat
+            weather_details["cpi_label"] = get_cpi_label(cpi_cat)
+        except Exception:
+            pass
 
     return {
         "player_a_prob": round(new_pa, 4),
         "player_b_prob": round(new_pb, 4),
         "confidence": round(new_conf, 4),
         "weather_applied": True,
-        "weather_details": {
-            "archetype_a": arch_a,
-            "archetype_b": arch_b,
-            "bonus_a_pct": bonus_a["bonus_pct"],
-            "bonus_b_pct": bonus_b["bonus_pct"],
-            "reasons_a": bonus_a["reasons"],
-            "reasons_b": bonus_b["reasons"],
-            "extreme_conditions": extreme["is_extreme"],
-            "confidence_penalty_pct": extreme["confidence_penalty_pct"],
-            "extreme_reasons": extreme["reasons"],
-            "ball_speed_change_pct": speed["speed_change_pct"],
-            "temp_c": weather.get("temp_mean_c"),
-            "humidity_pct": weather.get("humidity_pct"),
-            "altitude_m": weather.get("altitude_m"),
-            "wind_max_kmh": weather.get("wind_max_kmh"),
-            "precipitation_mm": weather.get("precipitation_mm"),
-        },
+        "weather_details": weather_details,
     }
 
 

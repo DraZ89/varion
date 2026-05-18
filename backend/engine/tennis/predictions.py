@@ -325,7 +325,8 @@ def predict_sets_score(player_a: dict, player_b: dict, surface: str,
 def predict_match(player_a: dict, player_b: dict, surface: str,
                   tournament_type: str = "ATP 250",
                   max_sets: int = BO3_MAX_SETS,
-                  weather: dict = None) -> dict:
+                  weather: dict = None,
+                  tournament_name: str = None) -> dict:
     """
     Prédiction complète multi-marchés pour un match de tennis.
 
@@ -356,7 +357,8 @@ def predict_match(player_a: dict, player_b: dict, surface: str,
                 "confidence": winner.get("confidence", 0.7),
             }
             adjusted = apply_weather_to_prediction(
-                raw, player_a, player_b, surface, weather
+                raw, player_a, player_b, surface, weather,
+                tournament_name=tournament_name,
             )
             if adjusted.get("weather_applied"):
                 # Mettre a jour les probas (en gardant les noms originaux du dict winner)
