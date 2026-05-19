@@ -1,17 +1,36 @@
 """
 Value Bet Engine pour le tennis.
 
-Marches couverts :
-- Vainqueur du match (1/2)
-- Plus tard : sets handicap, total games, etc.
+DEUX modes de detection :
+
+1. CONFIDENT FAVORITE (defaut) : favori solide avec cote raisonnable
+   - Proba IA >= 75%
+   - Cote entre 1.40 et 2.20 (eviter trop "safe" ou trop incertain)
+   - Strategie : gagner souvent avec gain modere
+
+2. VALUE BET (pur math) : edge mathematique positif
+   - Edge >= 5%
+   - Strategie : gain long terme via volume
 """
 
-MIN_EDGE = 0.03
+# === SEUILS MODE CONFIDENT FAVORITE (mode actif) ===
+CONFIDENT_MIN_PROB = 0.75    # 75% : forte conviction de l'IA
+CONFIDENT_MIN_ODDS = 1.40    # cote >= 1.40 : eviter les "1.05" qui rapportent rien
+CONFIDENT_MAX_ODDS = 2.20    # cote <= 2.20 : eviter les "outsiders" tagges 'favoris'
+
+# === SEUILS MODE VALUE BET PUR (desactive par defaut) ===
+MIN_EDGE = 0.05              # edge >= 5%
 MIN_PROBA = 0.20
 
+# === MODEL PICKS SANS COTES (fallback) ===
 # Seuil de confiance minimum pour generer un "model pick" (pari sans cote API)
 # Permet de tracker la fiabilite du modele meme sans cotes bookmaker reelles
-MIN_MODEL_CONFIDENCE = 0.70  # 70% : objectif 90% win rate
+MIN_MODEL_CONFIDENCE = 0.75  # aligne avec CONFIDENT_MIN_PROB
+
+# === STRATEGIE ACTIVE ===
+# 'confident_favorite' : favori >= 75% avec cote interessante (recommande)
+# 'value_bet'          : pari mathematique pur (perte freq mais ROI long terme)
+STRATEGY = "confident_favorite"
 
 
 def implied_probability(odds: float) -> float:
@@ -50,57 +69,107 @@ def explain_value(market: str, model_prob: float, book_prob: float, edge: float)
 def detect_tennis_value_bets(predictions: dict, odds: dict,
                              player_a_name: str, player_b_name: str) -> list:
     """
-    Compare les predictions du modele tennis aux cotes bookmaker.
-    Si les cotes ont _source == "estimated" (calculees par nous), on ne genere
-    PAS de value bet (puisqu'il n'y a pas d'edge a exploiter contre nous-memes).
+    Detecte les paris recommandes selon la STRATEGY active.
+
+    Mode 'confident_favorite' (defaut) :
+      → IA donne >= 75% à un joueur ET la cote est dans [1.40, 2.20]
+      → on recommande de parier sur lui
+
+    Mode 'value_bet' :
+      → Edge mathematique positif (proba IA > proba bookmaker implicite)
+      → strategie classique value betting
     """
     bets = []
 
-    # Si les cotes ne sont pas reelles (estimees ou absentes), pas de value bet
-    # Sources acceptees : "api" (RapidAPI Tennis) et "the_odds_api" (bookmakers reels)
+    # Si les cotes ne sont pas reelles (estimees ou absentes), pas de recommendation
     source = odds.get("_source")
     if source not in ("api", "the_odds_api"):
         return bets
 
     winner = predictions.get("winner", {})
+    prob_a = winner.get("prob_a", 0) / 100
+    prob_b = winner.get("prob_b", 0) / 100
+    odd_1 = odds.get("1") or 0
+    odd_2 = odds.get("2") or 0
 
-    # Vainqueur joueur A
-    if odds.get("1") and odds["1"] > 1.0:
-        prob = winner.get("prob_a", 0) / 100
-        book_prob = implied_probability(odds["1"])
-        edge = calculate_edge(prob, odds["1"])
-        if edge > MIN_EDGE and prob > MIN_PROBA:
+    if STRATEGY == "confident_favorite":
+        # --- Joueur A : favori confiant ---
+        if (prob_a >= CONFIDENT_MIN_PROB
+                and odd_1 >= CONFIDENT_MIN_ODDS
+                and odd_1 <= CONFIDENT_MAX_ODDS):
+            book_prob = implied_probability(odd_1)
+            edge = calculate_edge(prob_a, odd_1)
             bets.append({
                 "market": f"Victoire {player_a_name}",
                 "market_key": "1",
                 "selection": player_a_name,
-                "odds": odds["1"],
-                "model_prob": round(prob * 100, 2),
+                "odds": odd_1,
+                "model_prob": round(prob_a * 100, 2),
                 "implied_prob": round(book_prob * 100, 2),
                 "edge_pct": round(edge * 100, 2),
-                "confidence": confidence_level(edge, prob),
-                "explanation": explain_value("Vainqueur A", prob, book_prob, edge),
+                "confidence": "confident",
+                "explanation": (
+                    f"Favori solide : modele donne {prob_a*100:.1f}% a {player_a_name} "
+                    f"@ cote {odd_1:.2f} (gain net +{(odd_1-1)*100:.0f}% si gagne)."
+                ),
             })
 
-    # Vainqueur joueur B
-    if odds.get("2") and odds["2"] > 1.0:
-        prob = winner.get("prob_b", 0) / 100
-        book_prob = implied_probability(odds["2"])
-        edge = calculate_edge(prob, odds["2"])
-        if edge > MIN_EDGE and prob > MIN_PROBA:
+        # --- Joueur B : favori confiant ---
+        if (prob_b >= CONFIDENT_MIN_PROB
+                and odd_2 >= CONFIDENT_MIN_ODDS
+                and odd_2 <= CONFIDENT_MAX_ODDS):
+            book_prob = implied_probability(odd_2)
+            edge = calculate_edge(prob_b, odd_2)
             bets.append({
                 "market": f"Victoire {player_b_name}",
                 "market_key": "2",
                 "selection": player_b_name,
-                "odds": odds["2"],
-                "model_prob": round(prob * 100, 2),
+                "odds": odd_2,
+                "model_prob": round(prob_b * 100, 2),
                 "implied_prob": round(book_prob * 100, 2),
                 "edge_pct": round(edge * 100, 2),
-                "confidence": confidence_level(edge, prob),
-                "explanation": explain_value("Vainqueur B", prob, book_prob, edge),
+                "confidence": "confident",
+                "explanation": (
+                    f"Favori solide : modele donne {prob_b*100:.1f}% a {player_b_name} "
+                    f"@ cote {odd_2:.2f} (gain net +{(odd_2-1)*100:.0f}% si gagne)."
+                ),
             })
 
-    bets.sort(key=lambda b: -b["edge_pct"])
+    else:
+        # Mode 'value_bet' classique (edge mathematique)
+        if odd_1 > 1.0:
+            book_prob = implied_probability(odd_1)
+            edge = calculate_edge(prob_a, odd_1)
+            if edge > MIN_EDGE and prob_a > MIN_PROBA:
+                bets.append({
+                    "market": f"Victoire {player_a_name}",
+                    "market_key": "1",
+                    "selection": player_a_name,
+                    "odds": odd_1,
+                    "model_prob": round(prob_a * 100, 2),
+                    "implied_prob": round(book_prob * 100, 2),
+                    "edge_pct": round(edge * 100, 2),
+                    "confidence": confidence_level(edge, prob_a),
+                    "explanation": explain_value("Vainqueur A", prob_a, book_prob, edge),
+                })
+
+        if odd_2 > 1.0:
+            book_prob = implied_probability(odd_2)
+            edge = calculate_edge(prob_b, odd_2)
+            if edge > MIN_EDGE and prob_b > MIN_PROBA:
+                bets.append({
+                    "market": f"Victoire {player_b_name}",
+                    "market_key": "2",
+                    "selection": player_b_name,
+                    "odds": odd_2,
+                    "model_prob": round(prob_b * 100, 2),
+                    "implied_prob": round(book_prob * 100, 2),
+                    "edge_pct": round(edge * 100, 2),
+                    "confidence": confidence_level(edge, prob_b),
+                    "explanation": explain_value("Vainqueur B", prob_b, book_prob, edge),
+                })
+
+    bets.sort(key=lambda b: -b.get("model_prob", 0))
     return bets
 
 
